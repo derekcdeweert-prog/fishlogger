@@ -83,17 +83,21 @@ export async function buildBackup() {
   );
   const photoData = [];
   for (const p of photos) photoData.push({ id: p.id, createdAt: p.createdAt, dataUrl: await blobToDataUrl(p.blob) });
-  return JSON.stringify({ app: 'Fish Logger', version: 1, exportedAt: new Date().toISOString(), sessions, spots, lures, settings, photos: photoData });
+  // De API-sleutel blijft op het toestel en gaat nooit mee in een back-upbestand.
+  const safeSettings = settings.filter((s) => s.key !== 'anthropicKey');
+  return JSON.stringify({ app: 'Fish Logger', version: 1, exportedAt: new Date().toISOString(), sessions, spots, lures, settings: safeSettings, photos: photoData });
 }
 
 export async function restoreBackup(text) {
   const data = JSON.parse(text);
   if (data.app !== 'Fish Logger' || !Array.isArray(data.sessions)) throw new Error('Dit is geen back-up van Fish Logger.');
+  const keepKey = await db.get('settings', 'anthropicKey');
   await db.clearAll();
+  if (keepKey) await db.put('settings', keepKey);
   for (const s of data.sessions) await db.put('sessions', s);
   for (const s of data.spots || []) await db.put('spots', s);
   for (const l of data.lures || []) await db.put('lures', l);
-  for (const s of data.settings || []) await db.put('settings', s);
+  for (const s of data.settings || []) if (s.key !== 'anthropicKey') await db.put('settings', s);
   for (const p of data.photos || []) await db.put('photos', { id: p.id, createdAt: p.createdAt, blob: await dataUrlToBlob(p.dataUrl) });
   return { sessions: data.sessions.length, photos: (data.photos || []).length };
 }

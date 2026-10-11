@@ -288,6 +288,21 @@ main:has(#screen-kaart:not([hidden])) { padding: 0; max-width: none; }
 .link-btn { border: 0; background: none; padding: 4px 0; color: var(--water); font-weight: 600; text-decoration: underline; cursor: pointer; }
 .method-list .chip .ico { width: 14px; height: 14px; opacity: .7; }
 
+.swatch.photo { object-fit: cover; padding: 0; }
+.lure-photo { display: flex; gap: 12px; align-items: flex-start; }
+.lure-photo-img { width: 96px; height: 96px; flex: none; border-radius: 12px; object-fit: cover; background: var(--line); }
+.lure-photo-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; align-items: flex-start; }
+.recog-status { font-size: .9rem; color: var(--muted); }
+.recog-status:empty { display: none; }
+.recog-status.good { color: var(--good); }
+.recog-status.warn { color: var(--warn); }
+.recog-status b { color: var(--ink); }
+.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; vertical-align: -2px; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.steps a { color: var(--water); font-weight: 600; }
+code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
+
 /* ---------- Inzichten ---------- */
 .bars { display: flex; flex-direction: column; gap: 14px; }
 .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; }
