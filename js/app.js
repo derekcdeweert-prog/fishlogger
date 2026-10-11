@@ -3,7 +3,7 @@ import * as db from './db.js';
 import { computedConditions, fetchWeather, distanceM, DEFAULT_POS } from './conditions.js';
 import { buildCsv, buildBackup, restoreBackup, saveFile, stamp, sessionHours } from './data-export.js';
 import { MapScreen, openSpotEditor, getPosition } from './map.js';
-import { recognizeLure, getKey, setKey, clearKey } from './recognize.js';
+import { recognizeLure, getKey, setKey, clearKey, getMode, setMode } from './recognize.js';
 import { FACTORS, MIN_SESSIONS, scope, factorTable, bestCombinations, overall } from './insights.js';
 import {
   esc, $, $$, el, icon, toast, openSheet, confirmButton, chips, wireChips, chipValue, compressPhoto,
@@ -908,7 +908,7 @@ function renderTackle() {
         <h2 class="section-title">${esc(t)}</h2>
         ${ls.map((l) => `<button type="button" class="lure-row ${l.archived ? 'archived' : ''}" data-lure="${esc(l.id)}">
           ${l.photoId ? `<img class="swatch photo" data-photo="${esc(l.photoId)}" alt="">` : `<span class="swatch" aria-hidden="true">${esc((l.color || l.type || '?').slice(0, 1).toUpperCase())}</span>`}
-          <span class="lure-main"><strong>${esc(l.name || l.type)}</strong><span class="muted">${esc([l.color, l.sizeCm ? `${fmtNum(l.sizeCm, l.sizeCm % 1 ? 1 : 0)} cm` : '', l.weightG ? `${fmtNum(l.weightG, l.weightG % 1 ? 1 : 0)} g` : ''].filter(Boolean).join(' · '))}${l.archived ? ' · verborgen' : ''}</span></span>
+          <span class="lure-main"><strong>${esc(l.name || l.type)}</strong><span class="muted">${esc([l.color, l.sizeCm ? `${fmtNum(l.sizeCm, l.sizeCm % 1 ? 1 : 0)} cm` : '', l.weightG ? `${fmtNum(l.weightG, l.weightG % 1 ? 1 : 0)} g` : '', l.action].filter(Boolean).join(' · '))}${l.archived ? ' · verborgen' : ''}</span></span>
         </button>`).join('')}
       </section>`).join('') : `<div class="card empty-state"><p><strong>Nog geen kunstaas.</strong></p><p class="muted">Voeg je jerkbaits, shads, spinners en vliegen toe. Bij een sessie of vangst kies je ze daarna met één tik.</p></div>`}
     ${hiddenCount ? `<button class="btn ghost small" id="toggle-hidden" type="button">${showHidden ? 'Verberg' : 'Toon'} verborgen aas (${hiddenCount})</button>` : ''}
@@ -930,7 +930,10 @@ function renderTackle() {
 
   $('#add-lure', root).addEventListener('click', () => openLureSheet());
   $('#recog-settings', root).addEventListener('click', () => openKeySheet(() => renderTackle()));
-  getKey().then((k) => { const p = $('#recog-state', root); if (p) p.textContent = k ? 'Aan. Een foto bij nieuw kunstaas wordt automatisch herkend.' : 'Uit. Je vult kunstaas zelf in.'; });
+  Promise.all([getKey(), getMode()]).then(([k, m]) => {
+    const p = $('#recog-state', root);
+    if (p) p.textContent = !k ? 'Uit. Je vult kunstaas zelf in.' : m === 'snel' ? 'Aan, snelle stand: alleen de foto, zonder internet.' : 'Aan, grondige stand: de foto wordt bekeken en het product wordt op internet opgezocht.';
+  });
   fillPhotos(root);
   $$('[data-lure]', root).forEach((b) => b.addEventListener('click', () => openLureSheet(lureById(b.dataset.lure))));
   $('#toggle-hidden', root)?.addEventListener('click', () => {
@@ -963,6 +966,7 @@ function renderTackle() {
 /** Instellen van de eigen Claude API-sleutel voor het herkennen van kunstaas (FL-20). */
 async function openKeySheet(onDone) {
   const current = await getKey();
+  const mode = await getMode();
   const masked = current ? `${current.slice(0, 10)}…${current.slice(-4)}` : '';
   const body = el(`<form class="form" novalidate>
     <p>Fish Logger kan op een foto zien welk kunstaas het is: type, kleur, maat en soms merk en model. Daarvoor gaat de foto naar Claude van Anthropic.</p>
@@ -975,11 +979,14 @@ async function openKeySheet(onDone) {
       <input id="api-key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${current ? esc(masked) : 'sk-ant-…'}">
     </label>
     <p class="hint">De sleutel blijft alleen op deze iPhone. Hij gaat niet mee in je back-up en staat niet op GitHub.</p>
+    <div class="field"><span class="label">Hoe grondig</span>${chips('mode', [{ value: 'grondig', label: 'Grondig: product opzoeken' }, { value: 'snel', label: 'Snel: alleen de foto' }], mode)}</div>
+    <p class="hint"><b>Grondig</b> gebruikt Claude Sonnet en zoekt merk, model, maat en gewicht op internet op. Dat kost een paar cent per foto. <b>Snel</b> gebruikt Claude Haiku zonder internet: minder dan een tiende cent, maar merk en gewicht zijn vaak onbekend. Na elke herkenning zie je wat het kostte.</p>
     <div class="actions">
       ${current ? `<button type="button" class="btn ghost danger" id="key-remove">Sleutel verwijderen</button>` : ''}
       <button type="submit" class="btn primary">Opslaan</button>
     </div>
   </form>`);
+  wireChips(body);
   const sheet = openSheet({ title: 'Kunstaas herkennen', body });
   $('#key-remove', body)?.addEventListener('click', async () => {
     await clearKey();
@@ -990,7 +997,8 @@ async function openKeySheet(onDone) {
   body.addEventListener('submit', async (e) => {
     e.preventDefault();
     const v = $('#api-key', body).value.trim();
-    if (!v) { if (current) { sheet.close(); return; } toast('Plak eerst je API-sleutel.', 'warn'); return; }
+    await setMode(chipValue(body, 'mode') || 'grondig');
+    if (!v) { if (current) { sheet.close(); toast('Opgeslagen'); onDone && onDone(); return; } toast('Plak eerst je API-sleutel.', 'warn'); return; }
     if (!v.startsWith('sk-ant-')) { toast('Een Claude API-sleutel begint met sk-ant-.', 'warn'); return; }
     await setKey(v);
     sheet.close();
@@ -1054,6 +1062,7 @@ function openLureSheet(lure = null) {
         <div class="lure-photo-side">
           <label class="btn ${l.photoId ? 'ghost small' : 'primary'}" for="lure-photo-input">${icon('camera')} ${l.photoId ? 'Nieuwe foto' : 'Foto maken en herkennen'}</label>
           <p class="recog-status" aria-live="polite"></p>
+          <p class="hint small">Tip: fotografeer het aas van opzij, of de verpakking. Een zichtbaar logo of label helpt het meest.</p>
         </div>
       </div>
       <input id="lure-photo-input" type="file" accept="image/*" hidden>
@@ -1087,16 +1096,23 @@ function openLureSheet(lure = null) {
     fill('#lure-color', r.color);
     fill('#lure-size', r.sizeCm);
     fill('#lure-weight', r.weightG);
+    found = r;
   };
 
+  let found = null;
   const runRecognition = async () => {
     if (!newPhoto) return;
     setStatus('<span class="spinner" aria-hidden="true"></span> Herkennen…', 'busy');
     try {
-      const r = await recognizeLure(newPhoto, LURE_TYPES);
+      const r = await recognizeLure(newPhoto, LURE_TYPES, (msg) => setStatus(`<span class="spinner" aria-hidden="true"></span> ${esc(msg)}`, 'busy'));
       applyResult(r);
       const zeker = { hoog: 'vrij zeker', middel: 'redelijk zeker', laag: 'niet zeker' }[r.confidence] || '';
-      setStatus(`<b>Herkend:</b> ${esc([r.type, r.name, r.color].filter(Boolean).join(' · '))}${zeker ? ` (${zeker})` : ''}. Controleer de velden en pas aan waar nodig.`, 'good');
+      let host = '';
+      try { host = r.source ? new URL(r.source).hostname.replace(/^www\./, '') : ''; } catch (_) { host = ''; }
+      setStatus(`<b>Herkend:</b> ${esc([r.type, r.name, r.color].filter(Boolean).join(' · '))}${zeker ? ` (${zeker})` : ''}.
+        ${r.note ? `<span class="recog-note">${esc(r.note)}</span>` : ''}
+        ${host ? `<span class="recog-note">Gegevens van <a href="${esc(r.source)}" target="_blank" rel="noopener">${esc(host)}</a>.</span>` : ''}
+        <span class="recog-note">Controleer de velden. Kosten ≈ $${r.costUsd.toFixed(3).replace('.', ',')}${r.searches ? ` (${r.searches} ${r.searches === 1 ? 'zoekopdracht' : 'zoekopdrachten'})` : ''}.</span>`, 'good');
     } catch (err) {
       if (err.code === 'no_key') {
         setStatus('Foto staat klaar. Automatisch herkennen kan met een eigen Claude API-sleutel. <button type="button" class="link-btn" id="recog-setup">Instellen</button> of vul hieronder zelf in.', '');
@@ -1137,6 +1153,7 @@ function openLureSheet(lure = null) {
       color: $('#lure-color', body).value.trim(),
       sizeCm: num('#lure-size'),
       weightG: num('#lure-weight'),
+      ...(found ? { action: found.action || l.action || '', sourceUrl: found.source || l.sourceUrl || '' } : {}),
       archived: l.archived || false,
       createdAt: l.createdAt || new Date().toISOString(),
       ...extra,

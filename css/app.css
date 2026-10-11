@@ -297,6 +297,8 @@ main:has(#screen-kaart:not([hidden])) { padding: 0; max-width: none; }
 .recog-status.good { color: var(--good); }
 .recog-status.warn { color: var(--warn); }
 .recog-status b { color: var(--ink); }
+.recog-note { display: block; margin-top: 4px; color: var(--muted); }
+.recog-note a { color: var(--water); font-weight: 600; }
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; vertical-align: -2px; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
