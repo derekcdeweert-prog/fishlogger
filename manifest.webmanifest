@@ -1,0 +1,17 @@
+{
+  "name": "Fish Logger",
+  "short_name": "Fish Logger",
+  "description": "Logboek voor je vissessies: weer, stek, kunstaas, methode en vangst.",
+  "lang": "nl",
+  "start_url": "./#vissen",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#e9ede4",
+  "theme_color": "#1b2a22",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
