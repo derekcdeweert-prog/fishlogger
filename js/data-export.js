@@ -46,7 +46,7 @@ export function buildCsv(sessions) {
     const base = [
       s.id, dateStr(start), timeStr(start), timeStr(end), num(sessionHours(s), 2),
       s.spot?.name, pos.lat != null ? pos.lat.toFixed(6).replace('.', ',') : '', pos.lng != null ? pos.lng.toFixed(6).replace('.', ',') : '',
-      s.platform, (s.targetSpecies || []).join(', '), s.method, lureLabel(s.lure), s.waterClarity,
+      s.platform, (s.targetSpecies || []).join(', '), s.changes?.[0]?.method ?? s.method, lureLabel(s.changes?.[0] ? s.changes[0].lure : s.lure), s.waterClarity,
       c.dayPart, c.season, c.month, c.moonPhase,
       num(w.tempC), num(w.windKmh, 0), w.windBft ?? '', w.windDir, w.cloudPct ?? '', num(w.precipMm),
       num(w.pressureHpa), w.pressureTrend, num(w.pressureDelta3h), w.desc,

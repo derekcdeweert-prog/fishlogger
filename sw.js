@@ -1,5 +1,5 @@
 // Service worker: de app werkt ook zonder bereik aan het water.
-const VERSION = 'fl-r1-1';
+const VERSION = 'fl-r2-1';
 const APP_CACHE = `app-${VERSION}`;
 const TILE_CACHE = 'tiles-v1';
 const FONT_CACHE = 'fonts-v1';
@@ -16,6 +16,7 @@ const APP_FILES = [
   './js/map.js',
   './js/conditions.js',
   './js/data-export.js',
+  './js/insights.js',
   './vendor/leaflet/leaflet.js',
   './vendor/leaflet/leaflet.css',
   './icons/icon-192.png',
@@ -46,7 +47,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
 
   // Weer altijd live ophalen.
-  if (url.hostname === 'api.open-meteo.com') return;
+  if (url.hostname.endsWith('open-meteo.com')) return;
 
   // Kaarttegels: eerst uit de cache (snel en offline), op de achtergrond verversen.
   if (url.hostname === 'server.arcgisonline.com' || url.hostname === 'tile.openstreetmap.org') {

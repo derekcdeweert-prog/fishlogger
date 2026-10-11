@@ -3,6 +3,7 @@ import * as db from './db.js';
 import { computedConditions, fetchWeather, distanceM, DEFAULT_POS } from './conditions.js';
 import { buildCsv, buildBackup, restoreBackup, saveFile, stamp, sessionHours } from './data-export.js';
 import { MapScreen, openSpotEditor, getPosition } from './map.js';
+import { FACTORS, MIN_SESSIONS, scope, factorTable, bestCombinations, overall } from './insights.js';
 import {
   esc, $, $$, el, icon, toast, openSheet, confirmButton, chips, wireChips, chipValue, compressPhoto,
   fmtTime, fmtDate, fmtDuration, fmtNum, toLocalInput,
@@ -21,10 +22,13 @@ const state = {
   lures: [],
   sessions: [],
   methods: DEFAULT_METHODS,
+  hiddenMethods: [],
   last: {},
   photoUrls: new Map(),
 };
 
+/** Zichtbare methodes, plus een verborgen methode als die nu in gebruik is. */
+const allMethods = (include) => (include && !state.methods.includes(include) ? [...state.methods, include] : state.methods);
 const active = () => state.sessions.find((s) => !s.endedAt) || null;
 const spotById = (id) => state.spots.find((s) => s.id === id);
 const lureById = (id) => state.lures.find((l) => l.id === id);
@@ -42,6 +46,7 @@ async function load() {
   state.lures = lures.sort((a, b) => (a.type + a.name).localeCompare(b.type + b.name, 'nl'));
   state.sessions = sessions.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   state.methods = await db.getSetting('methods', DEFAULT_METHODS);
+  state.hiddenMethods = await db.getSetting('hiddenMethods', []);
   state.last = await db.getSetting('lastChoices', {});
 }
 
@@ -97,7 +102,8 @@ async function backfillWeather() {
   if (weatherBusy || !navigator.onLine) return;
   weatherBusy = true;
   try {
-    const todo = state.sessions.filter((s) => s.weather?.status !== 'ok' && Date.now() - Date.parse(s.startedAt) < 90 * 864e5);
+    // Mislukte pogingen hooguit eens per 6 uur opnieuw proberen.
+    const todo = state.sessions.filter((s) => s.weather?.status !== 'ok' && !(s.weather?.status === 'failed' && Date.now() - Date.parse(s.weather.triedAt || 0) < 6 * 3600e3));
     for (const s of todo) await updateWeather(s);
     if (todo.length) render();
   } finally {
@@ -128,6 +134,7 @@ const TABS = [
   { id: 'vissen', label: 'Vissen', icon: 'fish' },
   { id: 'kaart', label: 'Kaart', icon: 'map' },
   { id: 'logboek', label: 'Logboek', icon: 'book' },
+  { id: 'inzichten', label: 'Inzichten', icon: 'chart' },
   { id: 'tacklebox', label: 'Tackle box', icon: 'box' },
 ];
 
@@ -150,6 +157,7 @@ function render() {
   }
   if (state.tab === 'logboek') renderLogboek();
   if (state.tab === 'tacklebox') renderTackle();
+  if (state.tab === 'inzichten') renderInzichten();
 }
 
 // ---------- Vissen ----------
@@ -268,7 +276,7 @@ function openStartSheet() {
       <button type="button" class="btn ghost small" id="new-spot">${icon('pin')} Nieuwe stek op de kaart</button>
     </div>
     <div class="field"><span class="label">Doelsoort(en)</span>${chips('species', SPECIES, last.targetSpecies || ['Snoek'], { multi: true })}</div>
-    <div class="field"><span class="label">Methode</span>${chips('method', state.methods, last.method || state.methods[0])}</div>
+    <div class="field"><span class="label">Methode</span>${chips('method', state.methods, state.methods.includes(last.method) ? last.method : state.methods[0])}</div>
     <label class="field"><span class="label">Kunstaas</span><select id="start-lure">${lureOptions(last.lureId)}</select></label>
     <div class="field"><span class="label">Waterhelderheid</span>${chips('water', WATER, last.waterClarity || 'Licht troebel')}</div>
     <div class="field"><span class="label">Je vist vanaf</span>${chips('platform', PLATFORMS, 'Kant')}</div>
@@ -364,7 +372,7 @@ function openStartSheet() {
 
 function openRigSheet(s) {
   const body = el(`<form class="form" novalidate>
-    <div class="field"><span class="label">Methode</span>${chips('method', state.methods, s.method)}</div>
+    <div class="field"><span class="label">Methode</span>${chips('method', allMethods(s.method), s.method)}</div>
     <label class="field"><span class="label">Kunstaas</span><select id="rig-lure">${lureOptions(s.lureId)}</select></label>
     <button type="submit" class="btn primary wide">Opslaan</button>
   </form>`);
@@ -386,10 +394,11 @@ function openRigSheet(s) {
 
 // ----- Vangst -----
 
-function openCatchSheet(s, existing = null) {
+function openCatchSheet(s, existing = null, onSaved = null) {
   const f = existing || {};
   const defaultSpecies = f.species || (s.method === 'Vliegvissen' ? (s.targetSpecies.find((x) => FLY_SPECIES.includes(x)) || s.targetSpecies[0]) : s.targetSpecies[0]) || 'Snoek';
-  const at = f.at ? new Date(f.at) : new Date();
+  // Bij een afgeronde sessie (achteraf invullen) begint de tijd bij de start van de sessie.
+  const at = f.at ? new Date(f.at) : s.endedAt ? new Date(s.startedAt) : new Date();
   const body = el(`<form class="form" novalidate>
     <div class="field"><span class="label">Soort</span>${chips('species', SPECIES, defaultSpecies)}</div>
     <label class="field length-field">
@@ -406,7 +415,7 @@ function openCatchSheet(s, existing = null) {
     </div>
     <details class="more">
       <summary>Aas, methode, tijd en notitie</summary>
-      <div class="field"><span class="label">Methode</span>${chips('method', state.methods, f.method || s.method)}</div>
+      <div class="field"><span class="label">Methode</span>${chips('method', allMethods(f.method || s.method), f.method || s.method)}</div>
       <label class="field"><span class="label">Kunstaas</span><select id="catch-lure">${lureOptions(existing ? f.lureId : s.lureId)}</select></label>
       <label class="field"><span class="label">Tijdstip</span><input id="catch-time" type="time" value="${fmtTime(at)}"></label>
       <label class="field"><span class="label">Notitie</span><textarea id="catch-notes" rows="2" maxlength="500" placeholder="Bijv. aanbeet vlak bij de rietkraag">${esc(f.notes || '')}</textarea></label>
@@ -441,6 +450,7 @@ function openCatchSheet(s, existing = null) {
       await saveSession(s);
       sheet.close();
       render();
+      onSaved && onSaved();
     });
   }
 
@@ -453,8 +463,10 @@ function openCatchSheet(s, existing = null) {
       return;
     }
     const [hh, mm] = ($('#catch-time', body).value || fmtTime(at)).split(':').map(Number);
-    const when = new Date(existing ? f.at : Date.now());
+    const when = new Date(existing ? f.at : s.endedAt ? s.startedAt : Date.now());
     when.setHours(hh, mm, 0, 0);
+    // Sessie over middernacht: een tijd vóór de start hoort bij de volgende dag.
+    if (s.endedAt && when < new Date(s.startedAt)) when.setDate(when.getDate() + 1);
     let photoId = f.photoId || null;
     if (newPhoto) {
       if (photoId) await db.del('photos', photoId);
@@ -478,6 +490,7 @@ function openCatchSheet(s, existing = null) {
     await saveSession(s);
     sheet.close();
     render();
+    onSaved && onSaved();
     if (!existing) toast(`${record.species}${record.lengthCm ? ` van ${fmtNum(record.lengthCm, record.lengthCm % 1 ? 1 : 0)} cm` : ''} opgeslagen`);
   });
 }
@@ -563,6 +576,7 @@ function renderLogboek() {
       <p><strong>Nog geen sessies.</strong></p>
       <p class="muted">Start je eerste sessie op het tabblad Vissen. Na afloop staat hij hier, met weer, stek, aas en vangsten.</p>
     </div>`}
+    <button class="btn wide" type="button" id="add-past">${icon('plus')} Sessie achteraf toevoegen</button>
     <ol class="log-list">
       ${done.map((s) => {
         const start = new Date(s.startedAt);
@@ -589,6 +603,7 @@ function renderLogboek() {
     </section>`;
 
   $$('[data-session]', root).forEach((b) => b.addEventListener('click', () => openSessionDetail(b.dataset.session)));
+  $('#add-past', root).addEventListener('click', () => openSessionForm());
   $('#export-csv', root).addEventListener('click', async () => {
     if (!done.length) { toast('Er zijn nog geen afgeronde sessies om te exporteren.', 'warn'); return; }
     await saveFile(`fish-logger_${stamp()}.csv`, buildCsv(state.sessions), 'text/csv');
@@ -635,45 +650,241 @@ function openRestoreSheet(file) {
 }
 
 function openSessionDetail(id) {
-  const s = state.sessions.find((x) => x.id === id);
-  if (!s) return;
-  const start = new Date(s.startedAt);
-  const end = new Date(s.endedAt);
-  const c = s.conditions || {};
-  const body = el(`<div class="detail">
-    <p class="muted">${fmtDate(start)} · ${fmtTime(start)}–${fmtTime(end)} · ${fmtDuration(sessionHours(s))}</p>
-    <section class="live-numbers small-nums">
-      <div><span class="big">${s.catches.length}</span><span class="lbl">${s.catches.length === 1 ? 'vis' : 'vissen'}</span></div>
-      <div><span class="big">${sRate(s, 2)}</span><span class="lbl">per uur</span></div>
-      <div><span class="big">${s.catches.length ? fmtNum(Math.max(...s.catches.map((f) => f.lengthCm || 0)), 0) : '–'}</span><span class="lbl">langste (cm)</span></div>
-    </section>
-    <h3 class="section-title">Weer</h3>
-    ${weatherHtml(s.weather)}
-    <h3 class="section-title">Omstandigheden</h3>
-    <dl class="facts">
-      <div><dt>Dagdeel</dt><dd>${esc(c.dayPart)}</dd></div>
-      <div><dt>Seizoen</dt><dd>${esc(c.season)}</dd></div>
-      <div><dt>Maan</dt><dd>${esc(c.moonPhase)} (${c.moonIllumination ?? '–'}%)</dd></div>
-      <div><dt>Water</dt><dd>${esc(s.waterClarity)}</dd></div>
-      <div><dt>Vanaf</dt><dd>${esc(s.platform)}</dd></div>
-      <div><dt>Doelsoort</dt><dd>${esc((s.targetSpecies || []).join(', '))}</dd></div>
-      <div><dt>Methode</dt><dd>${esc(s.method)}</dd></div>
-      <div><dt>Aas</dt><dd>${esc(lureName(s.lure))}</dd></div>
-    </dl>
-    ${s.catches.length ? `<h3 class="section-title">Vangsten</h3><div class="catches">${s.catches.map(catchRow).join('')}</div>` : ''}
-    ${s.notes ? `<h3 class="section-title">Notitie</h3><p class="note">${esc(s.notes)}</p>` : ''}
-    <div class="actions"><button class="btn ghost danger" type="button" id="del-session">${icon('trash')} Verwijder sessie</button></div>
-  </div>`);
-  const sheet = openSheet({ title: s.spot?.name || 'Sessie', body });
-  fillPhotos(body);
-  $$('[data-catch]', body).forEach((b) => b.addEventListener('click', () => openCatchSheet(s, s.catches.find((f) => f.id === b.dataset.catch))));
-  confirmButton($('#del-session', body), 'Tik nogmaals om te verwijderen', async () => {
-    for (const f of s.catches) if (f.photoId) await db.del('photos', f.photoId);
-    await db.del('sessions', s.id);
-    state.sessions = state.sessions.filter((x) => x.id !== s.id);
+  const sheet = openSheet({ title: 'Sessie', body: '' });
+  const draw = () => {
+    const s = state.sessions.find((x) => x.id === id);
+    if (!s) { sheet.close(); return; }
+    const start = new Date(s.startedAt);
+    const end = new Date(s.endedAt);
+    const c = s.conditions || {};
+    $('.sheet-head h2', sheet.el).textContent = s.spot?.name || 'Sessie';
+    const wissels = (s.changes || []).length > 1 ? s.changes.slice(1) : [];
+    sheet.body.innerHTML = `<div class="detail">
+      <p class="muted">${fmtDate(start)} · ${fmtTime(start)}–${fmtTime(end)} · ${fmtDuration(sessionHours(s))}</p>
+      <section class="live-numbers small-nums">
+        <div><span class="big">${s.catches.length}</span><span class="lbl">${s.catches.length === 1 ? 'vis' : 'vissen'}</span></div>
+        <div><span class="big">${sRate(s, 2)}</span><span class="lbl">per uur</span></div>
+        <div><span class="big">${s.catches.length ? fmtNum(Math.max(...s.catches.map((f) => f.lengthCm || 0)), 0) : '–'}</span><span class="lbl">langste (cm)</span></div>
+      </section>
+      <h3 class="section-title">Weer</h3>
+      ${weatherHtml(s.weather)}
+      <h3 class="section-title">Omstandigheden</h3>
+      <dl class="facts">
+        <div><dt>Dagdeel (start)</dt><dd>${esc(c.dayPart)}</dd></div>
+        <div><dt>Seizoen</dt><dd>${esc(c.season)}</dd></div>
+        <div><dt>Maan</dt><dd>${esc(c.moonPhase)} (${c.moonIllumination ?? '–'}%)</dd></div>
+        <div><dt>Water</dt><dd>${esc(s.waterClarity)}</dd></div>
+        <div><dt>Vanaf</dt><dd>${esc(s.platform)}</dd></div>
+        <div><dt>Doelsoort</dt><dd>${esc((s.targetSpecies || []).join(', '))}</dd></div>
+        <div><dt>Methode</dt><dd>${esc((s.changes?.[0]?.method) || s.method)}</dd></div>
+        <div><dt>Aas</dt><dd>${esc(lureName(s.changes?.[0]?.lure ?? s.lure))}</dd></div>
+      </dl>
+      ${wissels.length ? `<h3 class="section-title">Gewisseld</h3><ul class="switch-list">${wissels.map((w) => `<li><b>${fmtTime(new Date(w.at))}</b> ${esc(w.method)} · ${esc(lureName(w.lure))}</li>`).join('')}</ul>` : ''}
+      <div class="section-row"><h3 class="section-title">Vangsten</h3><button class="btn small" type="button" id="detail-add-catch">${icon('plus')} Vangst</button></div>
+      ${s.catches.length ? `<div class="catches">${s.catches.map(catchRow).join('')}</div>` : `<p class="muted">Geen vangst in deze sessie.</p>`}
+      ${s.notes ? `<h3 class="section-title">Notitie</h3><p class="note">${esc(s.notes)}</p>` : ''}
+      <div class="actions">
+        <button class="btn ghost danger" type="button" id="del-session">${icon('trash')} Verwijder</button>
+        <button class="btn" type="button" id="edit-session">${icon('edit')} Bewerk sessie</button>
+      </div>
+    </div>`;
+    fillPhotos(sheet.body);
+    $$('[data-catch]', sheet.body).forEach((b) => b.addEventListener('click', () => openCatchSheet(s, s.catches.find((f) => f.id === b.dataset.catch), draw)));
+    $('#detail-add-catch', sheet.body).addEventListener('click', () => openCatchSheet(s, null, draw));
+    $('#edit-session', sheet.body).addEventListener('click', () => openSessionForm(s, draw));
+    confirmButton($('#del-session', sheet.body), 'Tik nogmaals om te verwijderen', async () => {
+      for (const f of s.catches) if (f.photoId) await db.del('photos', f.photoId);
+      await db.del('sessions', s.id);
+      state.sessions = state.sessions.filter((x) => x.id !== s.id);
+      sheet.close();
+      render();
+      toast('Sessie verwijderd');
+    });
+  };
+  draw();
+  return draw;
+}
+
+// ----- Sessie achteraf invoeren of bewerken (FL-6) -----
+
+function spotOptions(selectedId) {
+  const spots = state.spots.filter((sp) => !sp.archived || sp.id === selectedId);
+  return `<option value="" ${selectedId ? '' : 'selected'} disabled>Kies een stek</option>${spots
+    .map((sp) => `<option value="${esc(sp.id)}" ${sp.id === selectedId ? 'selected' : ''}>${esc(sp.name)}</option>`)
+    .join('')}`;
+}
+
+const dateInput = (d) => toLocalInput(d).slice(0, 10);
+
+function openSessionForm(existing = null, onSaved = null) {
+  const s = existing;
+  const first = s ? (s.changes && s.changes[0]) || { method: s.method, lureId: s.lureId } : null;
+  const last = state.last;
+  const start = s ? new Date(s.startedAt) : (() => { const d = new Date(); d.setHours(d.getHours() - 3, 0, 0, 0); return d; })();
+  const end = s ? new Date(s.endedAt) : (() => { const d = new Date(start); d.setHours(d.getHours() + 2); return d; })();
+  const body = el(`<form class="form" novalidate>
+    <div class="field">
+      <span class="label">Stek</span>
+      <select id="sf-spot">${spotOptions(s?.spot?.id)}</select>
+      <button type="button" class="btn ghost small" id="sf-new-spot">${icon('pin')} Nieuwe stek op de kaart</button>
+    </div>
+    <label class="field"><span class="label">Datum</span><input id="sf-date" type="date" value="${dateInput(start)}" max="${dateInput(new Date())}"></label>
+    <div class="two">
+      <label class="field"><span class="label">Begin</span><input id="sf-start" type="time" value="${fmtTime(start)}"></label>
+      <label class="field"><span class="label">Einde</span><input id="sf-end" type="time" value="${fmtTime(end)}"></label>
+    </div>
+    <div class="field"><span class="label">Doelsoort(en)</span>${chips('species', SPECIES, s?.targetSpecies || last.targetSpecies || ['Snoek'], { multi: true })}</div>
+    <div class="field"><span class="label">Methode${s && s.changes?.length > 1 ? ' bij de start' : ''}</span>${chips('method', allMethods(first?.method), first?.method || last.method || state.methods[0])}</div>
+    <label class="field"><span class="label">Kunstaas${s && s.changes?.length > 1 ? ' bij de start' : ''}</span><select id="sf-lure">${lureOptions(s ? first?.lureId : last.lureId)}</select></label>
+    <div class="field"><span class="label">Waterhelderheid</span>${chips('water', WATER, s?.waterClarity || last.waterClarity || 'Licht troebel')}</div>
+    <div class="field"><span class="label">Je viste vanaf</span>${chips('platform', PLATFORMS, s?.platform || 'Kant')}</div>
+    <label class="field"><span class="label">Notitie</span><textarea id="sf-notes" rows="2" maxlength="1000">${esc(s?.notes || '')}</textarea></label>
+    ${s ? '' : '<p class="hint">Het weer van dat moment wordt automatisch opgezocht. Vangsten voeg je daarna toe.</p>'}
+    <button type="submit" class="btn primary huge">${s ? 'Opslaan' : 'Sessie toevoegen'}</button>
+  </form>`);
+  wireChips(body);
+  const sheet = openSheet({ title: s ? 'Sessie bewerken' : 'Sessie achteraf', body });
+
+  $('#sf-new-spot', body).addEventListener('click', () => {
+    openSpotEditor({
+      onSave: async (spot) => {
+        const saved = await saveSpot(spot);
+        $('#sf-spot', body).innerHTML = spotOptions(saved.id);
+      },
+    });
+  });
+
+  body.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const spot = spotById($('#sf-spot', body).value);
+    if (!spot) { toast('Kies een stek.', 'warn'); return; }
+    const date = $('#sf-date', body).value;
+    const t1 = $('#sf-start', body).value;
+    const t2 = $('#sf-end', body).value;
+    if (!date || !t1 || !t2) { toast('Vul datum, begin- en eindtijd in.', 'warn'); return; }
+    const newStart = new Date(`${date}T${t1}`);
+    const newEnd = new Date(`${date}T${t2}`);
+    if (newEnd <= newStart) newEnd.setDate(newEnd.getDate() + 1); // over middernacht
+    if (newEnd > new Date(Date.now() + 60e3)) { toast('De sessie kan niet in de toekomst eindigen.', 'warn'); return; }
+    if ((newEnd - newStart) / 3600e3 > 24) { toast('Een sessie duurt maximaal 24 uur.', 'warn'); return; }
+    const targetSpecies = chipValue(body, 'species');
+    if (!targetSpecies.length) { toast('Kies minstens één doelsoort.', 'warn'); return; }
+    const method = chipValue(body, 'method');
+    const lureId = $('#sf-lure', body).value || null;
+    const lure = lureSnap(lureById(lureId)) || (s && first?.lureId === lureId ? first.lure : null);
+    const position = { lat: spot.lat, lng: spot.lng, accuracy: spot.accuracy ?? null };
+    const spotChanged = !s || s.spot?.id !== spot.id;
+    const startChanged = !s || s.startedAt !== newStart.toISOString();
+
+    const record = s || { id: db.uid(), catches: [], addedLater: true };
+    record.startedAt = newStart.toISOString();
+    record.endedAt = newEnd.toISOString();
+    record.spot = { id: spot.id, name: spot.name, lat: spot.lat, lng: spot.lng };
+    if (spotChanged || !record.position) record.position = position;
+    record.targetSpecies = targetSpecies;
+    record.waterClarity = chipValue(body, 'water');
+    record.platform = chipValue(body, 'platform');
+    record.notes = $('#sf-notes', body).value.trim();
+    // Beginsituatie bijwerken; latere wissels blijven staan.
+    const later = (record.changes || []).slice(1).filter((c) => Date.parse(c.at) > newStart && Date.parse(c.at) < newEnd);
+    record.changes = [{ at: record.startedAt, method, lureId, lure }, ...later];
+    const current = record.changes[record.changes.length - 1];
+    record.method = current.method;
+    record.lureId = current.lureId;
+    record.lure = current.lure;
+    if (spotChanged || startChanged) {
+      record.conditions = computedConditions(newStart, record.position);
+      record.weather = { status: 'loading' };
+    }
+    // Vangsten buiten de nieuwe tijden blijven bewaard, maar worden binnen de sessie gezet.
+    record.catches = record.catches.map((f) => {
+      const t = Date.parse(f.at);
+      if (t < newStart) return { ...f, at: record.startedAt };
+      if (t > newEnd) return { ...f, at: record.endedAt };
+      return f;
+    });
+    await saveSession(record);
     sheet.close();
     render();
-    toast('Sessie verwijderd');
+    let refresh = onSaved;
+    if (!s) {
+      toast('Sessie toegevoegd. Voeg nu je vangsten toe.');
+      refresh = openSessionDetail(record.id);
+    } else {
+      toast('Sessie bijgewerkt');
+      refresh && refresh();
+    }
+    if (record.weather?.status === 'loading') {
+      updateWeather(record).then(() => {
+        render();
+        refresh && refresh();
+      });
+    }
+  });
+}
+
+// ---------- Inzichten ----------
+
+function renderInzichten() {
+  const root = $('#screen-inzichten');
+  const species = root.dataset.species || 'Alle';
+  const present = SPECIES.filter((sp) => state.sessions.some((s) => s.endedAt && ((s.targetSpecies || []).includes(sp) || s.catches.some((f) => f.species === sp))));
+  const { sessions, fishOf } = scope(state.sessions, species);
+  const tot = overall(sessions, fishOf);
+  const enough = tot.sessions >= MIN_SESSIONS;
+  const combos = bestCombinations(sessions, fishOf);
+  const perHour = (r) => fmtNum(r, r >= 10 ? 1 : 2);
+
+  const factorCard = (factor) => {
+    const rows = factorTable(factor, sessions, fishOf);
+    if (!rows.length) return '';
+    const max = Math.max(...rows.map((r) => r.rate), tot.rate, 0.0001);
+    const avgPos = (tot.rate / max) * 100;
+    return `<section class="card factor">
+      <h2 class="section-title">${esc(factor.label)}</h2>
+      <div class="bars">
+        ${rows.map((r) => `<div class="bar-row ${r.lowData ? 'low' : ''}">
+          <span class="bar-label">${esc(r.value)}</span>
+          <span class="bar-val">${perHour(r.rate)}<small>/u</small></span>
+          <span class="bar-track" aria-hidden="true"><span class="bar" style="width:${Math.max(r.rate > 0 ? 2 : 0, (r.rate / max) * 100).toFixed(1)}%"></span><span class="avg-mark" style="left:${avgPos.toFixed(1)}%"></span></span>
+          <span class="bar-meta">${r.sessions} ${r.sessions === 1 ? 'sessie' : 'sessies'} · ${fmtNum(r.hours, r.hours < 10 ? 1 : 0)} u · ${r.fish} ${r.fish === 1 ? 'vis' : 'vissen'}${r.lowData ? ' · <b>te weinig data</b>' : ''}</span>
+        </div>`).join('')}
+      </div>
+    </section>`;
+  };
+
+  root.innerHTML = `
+    <header class="screen-head">
+      <p class="eyebrow">Inzichten</p>
+      <h1>Wanneer vang je het meest?</h1>
+    </header>
+    ${present.length > 1 ? chips('insight-species', ['Alle', ...present], species) : ''}
+    ${tot.sessions === 0 ? `<div class="card empty-state">
+      <p><strong>Nog geen afgeronde sessies${species !== 'Alle' ? ` voor ${esc(species.toLowerCase())}` : ''}.</strong></p>
+      <p class="muted">Na elke sessie zie je hier je vangst per uur per dagdeel, drukverloop, wind, stek, aas en meer.</p>
+    </div>` : `
+    <section class="totals">
+      <div><span class="big">${perHour(tot.rate)}</span><span class="lbl">vissen per uur</span></div>
+      <div><span class="big">${tot.sessions}</span><span class="lbl">sessies</span></div>
+      <div><span class="big">${fmtNum(tot.hours, 0)}</span><span class="lbl">uur gevist</span></div>
+    </section>
+    ${enough ? '' : `<div class="card nudge"><p><strong>${tot.sessions} van de ${MIN_SESSIONS} sessies.</strong> Patronen worden betrouwbaar vanaf ${MIN_SESSIONS} sessies per waarde. Log ook de sessies waarin je niets vangt, want die tellen net zo zwaar mee.</p></div>`}
+    <section class="card combos">
+      <h2 class="section-title">Beste combinaties</h2>
+      ${combos.length ? `<ol class="combo-list">${combos.map((c) => `<li class="${c.lowData ? 'low' : ''}">
+        <p class="combo-parts">${c.parts.map((p) => `<span><small>${esc(p.factor)}</small>${esc(p.value)}</span>`).join('<i>+</i>')}</p>
+        <p class="combo-num"><b>${perHour(c.rate)}</b> per uur${tot.rate > 0 ? ` · ${fmtNum(c.rate / tot.rate, 1)}× je gemiddelde` : ''}</p>
+        <p class="muted small">${c.sessions} sessies · ${c.fish} ${c.fish === 1 ? 'vis' : 'vissen'}${c.lowData ? ' · <b>te weinig data</b>' : ''}</p>
+      </li>`).join('')}</ol>` : `<p class="muted">Een combinatie verschijnt zodra je minstens 3 sessies met dezelfde omstandigheden hebt en daarin vis hebt gevangen.</p>`}
+    </section>
+    <p class="hint legend-hint"><span class="avg-swatch" aria-hidden="true"></span> Streepje = je gemiddelde van ${perHour(tot.rate)} per uur. Dagdeel, aas en methode tellen per uur dat je zo viste, ook binnen één sessie.</p>
+    ${FACTORS.map(factorCard).join('')}`}`;
+
+  root.querySelector('.chips')?.addEventListener('click', (e) => {
+    const b = e.target.closest('.chip');
+    if (!b) return;
+    root.dataset.species = b.dataset.value;
+    renderInzichten();
   });
 }
 
@@ -702,7 +913,9 @@ function renderTackle() {
     ${hiddenCount ? `<button class="btn ghost small" id="toggle-hidden" type="button">${showHidden ? 'Verberg' : 'Toon'} verborgen aas (${hiddenCount})</button>` : ''}
     <section class="card">
       <h2 class="section-title">Methodes</h2>
-      <div class="method-list">${state.methods.map((m) => `<span class="chip on static">${esc(m)}<button type="button" class="chip-x" data-remove-method="${esc(m)}" aria-label="Verwijder ${esc(m)}">${icon('close')}</button></span>`).join('')}</div>
+      <p class="muted small">Tik op een methode om hem te hernoemen of te verbergen.</p>
+      <div class="method-list">${state.methods.map((m) => `<button type="button" class="chip on" data-method="${esc(m)}">${esc(m)} ${icon('edit')}</button>`).join('')}</div>
+      ${state.hiddenMethods.length ? `<p class="muted small">Verborgen: ${state.hiddenMethods.map((m) => `<button type="button" class="link-btn" data-unhide="${esc(m)}">${esc(m)} tonen</button>`).join(', ')}</p>` : ''}
       <form class="inline-add" id="add-method" novalidate>
         <input id="new-method" type="text" maxlength="30" placeholder="Nieuwe methode, bijv. Trollen" aria-label="Nieuwe methode">
         <button class="btn small" type="submit">Toevoegen</button>
@@ -715,10 +928,13 @@ function renderTackle() {
     root.dataset.showHidden = String(!showHidden);
     renderTackle();
   });
-  $$('[data-remove-method]', root).forEach((b) => b.addEventListener('click', async () => {
-    if (state.methods.length <= 1) { toast('Houd minstens één methode over.', 'warn'); return; }
-    state.methods = state.methods.filter((m) => m !== b.dataset.removeMethod);
+  $$('[data-method]', root).forEach((b) => b.addEventListener('click', () => openMethodSheet(b.dataset.method)));
+  $$('[data-unhide]', root).forEach((b) => b.addEventListener('click', async () => {
+    const m = b.dataset.unhide;
+    state.hiddenMethods = state.hiddenMethods.filter((x) => x !== m);
+    state.methods = [...state.methods, m];
     await db.setSetting('methods', state.methods);
+    await db.setSetting('hiddenMethods', state.hiddenMethods);
     renderTackle();
   }));
   $('#add-method', root).addEventListener('submit', async (e) => {
@@ -726,8 +942,56 @@ function renderTackle() {
     const v = $('#new-method', root).value.trim();
     if (!v) return;
     if (state.methods.some((m) => m.toLowerCase() === v.toLowerCase())) { toast('Deze methode bestaat al.', 'warn'); return; }
-    state.methods = [...state.methods, v];
+    const hidden = state.hiddenMethods.find((m) => m.toLowerCase() === v.toLowerCase());
+    if (hidden) state.hiddenMethods = state.hiddenMethods.filter((m) => m !== hidden);
+    state.methods = [...state.methods, hidden || v];
     await db.setSetting('methods', state.methods);
+    await db.setSetting('hiddenMethods', state.hiddenMethods);
+    renderTackle();
+  });
+}
+
+/** Methode hernoemen (werkt door in alle sessies) of verbergen (blijft in je statistieken). */
+function openMethodSheet(name) {
+  const used = state.sessions.filter((s) => s.method === name || (s.changes || []).some((c) => c.method === name) || s.catches.some((f) => f.method === name)).length;
+  const body = el(`<form class="form" novalidate>
+    <label class="field"><span class="label">Naam</span><input id="method-name" type="text" maxlength="30" value="${esc(name)}"></label>
+    <p class="hint">${used ? `Gebruikt in ${used} ${used === 1 ? 'sessie' : 'sessies'}. Een nieuwe naam wordt daar ook aangepast.` : 'Nog niet gebruikt in een sessie.'}</p>
+    <div class="actions">
+      <button type="button" class="btn ghost" id="method-hide">Verbergen</button>
+      <button type="submit" class="btn primary">Opslaan</button>
+    </div>
+  </form>`);
+  const sheet = openSheet({ title: 'Methode', body });
+  $('#method-hide', body).addEventListener('click', async () => {
+    if (state.methods.length <= 1) { toast('Houd minstens één methode over.', 'warn'); return; }
+    state.methods = state.methods.filter((m) => m !== name);
+    state.hiddenMethods = [...state.hiddenMethods, name];
+    await db.setSetting('methods', state.methods);
+    await db.setSetting('hiddenMethods', state.hiddenMethods);
+    sheet.close();
+    renderTackle();
+    toast(`${name} verborgen. Oude sessies blijven meetellen.`);
+  });
+  body.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const v = $('#method-name', body).value.trim();
+    if (!v) { toast('Geef de methode een naam.', 'warn'); return; }
+    if (v !== name && [...state.methods, ...state.hiddenMethods].some((m) => m.toLowerCase() === v.toLowerCase())) { toast('Deze methode bestaat al.', 'warn'); return; }
+    if (v !== name) {
+      state.methods = state.methods.map((m) => (m === name ? v : m));
+      for (const s of state.sessions) {
+        let changed = false;
+        if (s.method === name) { s.method = v; changed = true; }
+        for (const c of s.changes || []) if (c.method === name) { c.method = v; changed = true; }
+        for (const f of s.catches) if (f.method === name) { f.method = v; changed = true; }
+        if (changed) await db.put('sessions', s);
+      }
+      if (state.last.method === name) { state.last.method = v; await db.setSetting('lastChoices', state.last); }
+      await db.setSetting('methods', state.methods);
+      toast(`Hernoemd naar ${v}`);
+    }
+    sheet.close();
     renderTackle();
   });
 }

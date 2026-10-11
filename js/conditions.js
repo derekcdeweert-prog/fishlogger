@@ -158,17 +158,25 @@ export const weatherDesc = (code) => WMO[code] ?? '';
 export async function fetchWeather(date, pos) {
   const now = Date.now();
   const daysBack = Math.ceil((now - date.getTime()) / DAY_MS) + 1;
-  if (daysBack > 92) throw new Error('Te lang geleden voor weergegevens');
-  const params = new URLSearchParams({
+  const common = {
     latitude: pos.lat.toFixed(4),
     longitude: pos.lng.toFixed(4),
     hourly: 'temperature_2m,precipitation,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,weather_code',
     timezone: 'auto',
-    past_days: String(Math.max(1, daysBack)),
-    forecast_days: '1',
     wind_speed_unit: 'kmh',
-  });
-  const res = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`, { cache: 'no-store' });
+  };
+  let url;
+  if (daysBack <= 90) {
+    // Recent: de gewone weerdienst kent de afgelopen ±3 maanden.
+    url = `https://api.open-meteo.com/v1/forecast?${new URLSearchParams({ ...common, past_days: String(Math.max(1, daysBack)), forecast_days: '1' })}`;
+  } else {
+    // Ouder: het weerarchief (terug tot 1940).
+    const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const from = new Date(date.getTime() - DAY_MS);
+    const to = new Date(date.getTime() + DAY_MS);
+    url = `https://archive-api.open-meteo.com/v1/archive?${new URLSearchParams({ ...common, start_date: ymd(from), end_date: ymd(to) })}`;
+  }
+  const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error(`Weerdienst gaf fout ${res.status}`);
   const data = await res.json();
   return pickHour(data, date);

@@ -282,16 +282,48 @@ main:has(#screen-kaart:not([hidden])) { padding: 0; max-width: none; }
 .pop-stats b { color: var(--ink); font-variant-numeric: tabular-nums; }
 .leaflet-control-attribution { font-size: 10px; }
 
+.section-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.section-row .section-title { margin: 0; }
+.switch-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.link-btn { border: 0; background: none; padding: 4px 0; color: var(--water); font-weight: 600; text-decoration: underline; cursor: pointer; }
+.method-list .chip .ico { width: 14px; height: 14px; opacity: .7; }
+
+/* ---------- Inzichten ---------- */
+.bars { display: flex; flex-direction: column; gap: 14px; }
+.bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; }
+.bar-label { font-weight: 600; overflow-wrap: anywhere; }
+.bar-val { font-family: var(--font-display); font-weight: 700; font-size: 1.35rem; font-variant-numeric: tabular-nums; text-align: right; }
+.bar-val small { font-family: var(--font-body); font-weight: 500; font-size: .75rem; color: var(--muted); margin-left: 1px; }
+.bar-track { grid-column: 1 / -1; position: relative; height: 12px; border-radius: 4px; background: var(--line); }
+.bar { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--water); }
+.bar-row.low .bar { background: repeating-linear-gradient(135deg, var(--water) 0 3px, transparent 3px 6px); border: 1px solid var(--water); }
+.avg-mark { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: var(--accent); border-radius: 1px; }
+.bar-meta { grid-column: 1 / -1; font-size: .8rem; color: var(--muted); }
+.bar-meta b, .combo-list b { font-weight: 600; }
+.bar-row.low .bar-meta b { color: var(--warn); }
+.legend-hint { display: flex; gap: 8px; align-items: flex-start; }
+.avg-swatch { flex: none; width: 2px; height: 16px; margin-top: 2px; background: var(--accent); border-radius: 1px; }
+.combo-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.combo-list li { display: flex; flex-direction: column; gap: 4px; padding-top: 12px; border-top: 1px solid var(--line); }
+.combo-list li:first-child { border-top: 0; padding-top: 0; }
+.combo-parts { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 8px; }
+.combo-parts span { display: flex; flex-direction: column; font-weight: 600; }
+.combo-parts small { font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 500; }
+.combo-parts i { font-style: normal; color: var(--muted); padding-bottom: 1px; }
+.combo-num b { font-family: var(--font-display); font-size: 1.5rem; color: var(--accent); }
+.combo-list li.low .combo-num b { color: var(--ink); }
+.combo-list li.low .muted b { color: var(--warn); }
+
 /* ---------- Tabbalk ---------- */
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000;
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
   padding-bottom: env(safe-area-inset-bottom, 0px);
   background: var(--surface); border-top: 1px solid var(--line);
 }
 .tabbar button {
-  height: var(--tabbar-h); border: 0; background: transparent; color: var(--muted); cursor: pointer;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: .75rem; font-weight: 600;
+  height: var(--tabbar-h); min-width: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: .7rem; font-weight: 600; white-space: nowrap;
 }
 .tabbar button[aria-current="page"] { color: var(--accent); }
 .tabbar .ico { width: 24px; height: 24px; }
