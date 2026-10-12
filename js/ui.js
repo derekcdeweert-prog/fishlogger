@@ -32,16 +32,32 @@ export function toLocalInput(d) {
 
 // ---------- Melding onderin ----------
 let toastTimer;
-export function toast(msg, kind = '') {
+export function toast(msg, kind = '', action = null) {
   let t = $('#toast');
   if (!t) {
     t = el('<div id="toast" role="status" aria-live="polite"></div>');
     document.body.appendChild(t);
   }
   t.textContent = msg;
-  t.className = `show ${kind}`;
+  t.className = `show ${kind}${action ? ' has-action' : ''}`;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.className = ''), 3200);
+  const hide = () => {
+    t.className = '';
+    if (action && action.onExpire) action.onExpire();
+  };
+  if (action) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'toast-action';
+    b.textContent = action.label;
+    b.addEventListener('click', () => {
+      clearTimeout(toastTimer);
+      t.className = '';
+      action.onClick();
+    }, { once: true });
+    t.appendChild(b);
+  }
+  toastTimer = setTimeout(hide, action ? 6000 : 3200);
 }
 
 // ---------- Sheet (paneel dat van onder in beeld schuift) ----------

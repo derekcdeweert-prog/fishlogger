@@ -634,7 +634,9 @@ function renderLogboek() {
     <ol class="log-list">
       ${done.map((s) => {
         const start = new Date(s.startedAt);
-        return `<li><button type="button" class="log-row" data-session="${esc(s.id)}">
+        return `<li class="swipe" data-swipe="${esc(s.id)}">
+          <button type="button" class="swipe-del" data-del-session="${esc(s.id)}" tabindex="-1">${icon('trash')}<span>Verwijder</span></button>
+          <button type="button" class="log-row swipe-front" data-session="${esc(s.id)}">
           <span class="log-date"><span class="d">${start.getDate()}</span><span class="m">${fmtDate(start).split(' ')[2]}</span></span>
           <span class="log-main">
             <strong>${esc(s.spot?.name || '')}</strong>
@@ -656,7 +658,14 @@ function renderLogboek() {
       <p class="muted small" id="last-backup"></p>
     </section>`;
 
-  $$('[data-session]', root).forEach((b) => b.addEventListener('click', () => openSessionDetail(b.dataset.session)));
+  $$('[data-session]', root).forEach((b) => b.addEventListener('click', () => {
+    if (b.dataset.justSwiped) return; // de tik hoorde bij het schuiven
+    const li = b.closest('.swipe');
+    if (li && li.classList.contains('open')) { closeSwipes(); return; }
+    openSessionDetail(b.dataset.session);
+  }));
+  $$('[data-del-session]', root).forEach((b) => b.addEventListener('click', () => deleteSession(b.dataset.delSession)));
+  $$('.swipe', root).forEach(wireSwipe);
   $('#add-past', root).addEventListener('click', () => openSessionForm());
   $('#export-csv', root).addEventListener('click', async () => {
     if (!done.length) { toast('Er zijn nog geen afgeronde sessies om te exporteren.', 'warn'); return; }
@@ -682,6 +691,82 @@ function renderLogboek() {
   };
   showLastBackup();
 }
+
+// ----- Schuiven om te verwijderen -----
+
+const SWIPE_W = 96; // breedte van de verwijderknop
+
+function closeSwipes(except = null) {
+  $$('.swipe.open').forEach((li) => {
+    if (li === except) return;
+    li.classList.remove('open');
+    $('.swipe-front', li).style.transform = '';
+    $('.swipe-del', li).tabIndex = -1;
+  });
+}
+
+function wireSwipe(li) {
+  const front = $('.swipe-front', li);
+  let startX = 0, startY = 0, dx = 0, base = 0, tracking = false, horizontal = null, pid = null;
+  front.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    tracking = true; horizontal = null; dx = 0; pid = e.pointerId;
+    startX = e.clientX; startY = e.clientY;
+    base = li.classList.contains('open') ? -SWIPE_W : 0;
+  });
+  front.addEventListener('pointermove', (e) => {
+    if (!tracking || e.pointerId !== pid) return;
+    const mx = e.clientX - startX, my = e.clientY - startY;
+    if (horizontal === null && (Math.abs(mx) > 8 || Math.abs(my) > 8)) {
+      horizontal = Math.abs(mx) > Math.abs(my);
+      if (horizontal) { front.setPointerCapture(pid); li.classList.add('dragging'); closeSwipes(li); }
+    }
+    if (!horizontal) return;
+    dx = mx;
+    const x = Math.max(-SWIPE_W * 1.4, Math.min(0, base + dx));
+    front.style.transform = `translateX(${x}px)`;
+  });
+  const end = () => {
+    if (!tracking) return;
+    tracking = false;
+    li.classList.remove('dragging');
+    if (!horizontal) return;
+    front.dataset.justSwiped = '1';
+    setTimeout(() => delete front.dataset.justSwiped, 50);
+    const open = base + dx < -SWIPE_W / 2;
+    li.classList.toggle('open', open);
+    front.style.transform = open ? `translateX(${-SWIPE_W}px)` : '';
+    $('.swipe-del', li).tabIndex = open ? 0 : -1;
+  };
+  front.addEventListener('pointerup', end);
+  front.addEventListener('pointercancel', end);
+}
+
+/** Verwijdert een sessie, met 6 seconden de tijd om het ongedaan te maken. */
+async function deleteSession(id) {
+  const s = state.sessions.find((x) => x.id === id);
+  if (!s) return;
+  await db.del('sessions', id);
+  state.sessions = state.sessions.filter((x) => x.id !== id);
+  render();
+  toast('Sessie verwijderd', '', {
+    label: 'Ongedaan maken',
+    onClick: async () => {
+      await saveSession(s);
+      render();
+      toast('Sessie teruggezet');
+    },
+    // Foto's pas echt weggooien als er niet meer ongedaan gemaakt kan worden.
+    onExpire: async () => {
+      if (state.sessions.some((x) => x.id === id)) return;
+      for (const f of s.catches) if (f.photoId) await db.del('photos', f.photoId);
+    },
+  });
+}
+
+document.addEventListener('pointerdown', (e) => {
+  if (!e.target.closest('.swipe')) closeSwipes();
+});
 
 function openRestoreSheet(file) {
   const body = el(`<div class="form">
@@ -747,12 +832,8 @@ function openSessionDetail(id) {
     $('#detail-add-catch', sheet.body).addEventListener('click', () => openCatchSheet(s, null, draw));
     $('#edit-session', sheet.body).addEventListener('click', () => openSessionForm(s, draw));
     confirmButton($('#del-session', sheet.body), 'Tik nogmaals om te verwijderen', async () => {
-      for (const f of s.catches) if (f.photoId) await db.del('photos', f.photoId);
-      await db.del('sessions', s.id);
-      state.sessions = state.sessions.filter((x) => x.id !== s.id);
       sheet.close();
-      render();
-      toast('Sessie verwijderd');
+      await deleteSession(s.id);
     });
   };
   draw();
