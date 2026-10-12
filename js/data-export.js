@@ -28,7 +28,7 @@ const HEADER = [
   'doelsoorten', 'methode_start', 'aas_start', 'waterhelderheid', 'dagdeel', 'seizoen', 'maand', 'maanfase',
   'temperatuur_c', 'wind_kmu', 'wind_bft', 'windrichting', 'bewolking_pct', 'neerslag_mm', 'luchtdruk_hpa',
   'drukverloop', 'drukverschil_3u_hpa', 'weer', 'vissen_in_sessie', 'vangst_per_uur',
-  'vangst_tijd', 'soort', 'lengte_cm', 'vangst_aas', 'vangst_methode', 'vangst_notitie', 'sessie_notitie',
+  'vangst_tijd', 'soort', 'lengte_cm', 'vangst_aas', 'vangst_methode', 'vangst_notitie', 'vangst_breedtegraad', 'vangst_lengtegraad', 'sessie_notitie',
 ];
 
 const lureLabel = (l) => (l ? [l.type, l.name, l.color, l.sizeCm ? `${l.sizeCm} cm` : ''].filter(Boolean).join(' · ') : '');
@@ -53,10 +53,12 @@ export function buildCsv(sessions) {
       s.catches.length, num(catchRate(s), 2),
     ];
     if (s.catches.length === 0) {
-      rows.push([...base, '', '', '', '', '', '', s.notes]);
+      rows.push([...base, '', '', '', '', '', '', '', '', s.notes]);
     } else {
       for (const f of s.catches) {
-        rows.push([...base, timeStr(new Date(f.at)), f.species, num(f.lengthCm), lureLabel(f.lure), f.method, f.notes, s.notes]);
+        const fp = f.position;
+        rows.push([...base, timeStr(new Date(f.at)), f.species, num(f.lengthCm), lureLabel(f.lure), f.method, f.notes,
+          fp ? fp.lat.toFixed(6).replace('.', ',') : '', fp ? fp.lng.toFixed(6).replace('.', ',') : '', s.notes]);
       }
     }
   }

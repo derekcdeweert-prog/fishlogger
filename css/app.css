@@ -305,6 +305,11 @@ main:has(#screen-kaart:not([hidden])) { padding: 0; max-width: none; }
 .steps a { color: var(--water); font-weight: 600; }
 code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
 
+.place-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.place-text { min-width: 0; overflow-wrap: anywhere; color: var(--muted); font-size: .95rem; }
+.has-place .ico { width: 14px; height: 14px; vertical-align: -2px; color: var(--water); }
+.leaflet-interactive.catch-dot { fill: var(--accent); fill-opacity: .95; stroke: #fff; stroke-width: 2.5; }
+
 /* ---------- Inzichten ---------- */
 .bars { display: flex; flex-direction: column; gap: 14px; }
 .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; }

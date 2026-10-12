@@ -91,8 +91,10 @@ export function watchPosition(onUpdate, onError) {
 // ---------- Kaart-scherm ----------
 
 export class MapScreen {
-  constructor(root, { getSpots, statsFor, onEditSpot, onNewSpot }) {
+  constructor(root, { getSpots, statsFor, onEditSpot, onNewSpot, getCatches = async () => [], onOpenSession = () => {} }) {
     this.root = root;
+    this.getCatches = getCatches;
+    this.onOpenSession = onOpenSession;
     this.getSpots = getSpots;
     this.statsFor = statsFor;
     this.onEditSpot = onEditSpot;
@@ -130,6 +132,8 @@ export class MapScreen {
     this.root.addEventListener('click', (e) => {
       const b = e.target.closest('[data-edit-spot]');
       if (b) this.onEditSpot(b.dataset.editSpot);
+      const o = e.target.closest('[data-open-session]');
+      if (o) { this.map.closePopup(); this.onOpenSession(o.dataset.openSession); }
     });
     this.refresh(true);
     setTimeout(() => this.map.invalidateSize(), 50);
@@ -137,7 +141,10 @@ export class MapScreen {
 
   async refresh(fit = false) {
     if (!this.map) return;
+    // Eerst alle gegevens ophalen, dan pas de kaart leegmaken: zo kunnen twee gelijktijdige
+    // verversingen geen dubbele stippen opleveren.
     const spots = (await this.getSpots()).filter((s) => !s.archived);
+    const catches = await this.getCatches();
     this.markers.clearLayers();
     for (const s of spots) {
       const st = this.statsFor(s.id);
@@ -156,9 +163,23 @@ export class MapScreen {
       );
       this.markers.addLayer(m);
     }
+    // Vangsten als stippen (FL-22)
+    for (const c of catches) {
+      const dot = L.circleMarker([c.lat, c.lng], { radius: 7, className: 'catch-dot', bubblingMouseEvents: false });
+      dot.bindPopup(
+        `<div class="pop">
+          <strong>${esc(c.species)}${c.lengthCm ? ` · ${fmtNum(c.lengthCm, c.lengthCm % 1 ? 1 : 0)} cm` : ''}</strong>
+          <div class="pop-stats"><span>${esc(c.when)}</span>${c.lure ? `<span>${esc(c.lure)}</span>` : ''}${c.spotName ? `<span>bij ${esc(c.spotName)}</span>` : ''}</div>
+          <button type="button" class="btn small" data-open-session="${esc(c.sessionId)}">Bekijk sessie</button>
+        </div>`,
+        { closeButton: false, minWidth: 180 },
+      );
+      this.markers.addLayer(dot);
+    }
     if (fit) {
-      if (spots.length) {
-        const b = L.latLngBounds(spots.map((s) => [s.lat, s.lng]));
+      const pts = [...spots.map((s) => [s.lat, s.lng]), ...catches.map((c) => [c.lat, c.lng])];
+      if (pts.length) {
+        const b = L.latLngBounds(pts);
         this.map.fitBounds(b.pad(0.3), { maxZoom: 16 });
       } else {
         this.locate(false);
@@ -335,6 +356,70 @@ export function openSpotEditor({ spot = null, canDelete = false, onSave, onDelet
     sheet.close();
   });
 
+  setTimeout(() => map.invalidateSize(), 250);
+  return sheet;
+}
+
+
+/**
+ * Kaart om één punt te kiezen of te verschuiven (bijv. de plek van een vangst).
+ * `start` = {lat, lng} of null; `fallback` = waar de kaart begint zonder punt.
+ */
+export function openPointPicker({ title, start = null, fallback = null, hint = '', onSave, onClear = null }) {
+  const body = document.createElement('div');
+  body.className = 'spot-editor';
+  body.innerHTML = `
+    <div class="spot-map-wrap">
+      <div class="spot-map"></div>
+      <div class="map-tools">
+        <button class="map-btn" type="button" data-act="layer">${icon('layers')}<span>Kaart</span></button>
+        <button class="map-btn" type="button" data-act="gps" aria-label="Zet de stip op mijn locatie">${icon('locate')}</button>
+      </div>
+      <div class="gps-badge" aria-live="polite">${start ? 'Sleep de stip of tik op de kaart' : 'Tik op de kaart om de plek te kiezen'}</div>
+    </div>
+    <div class="form spot-form">
+      ${hint ? `<p class="hint">${esc(hint)}</p>` : ''}
+      <div class="coords" aria-live="polite"></div>
+      <div class="actions">
+        ${onClear && start ? `<button type="button" class="btn ghost" data-act="clear">Plek wissen</button>` : ''}
+        <button type="button" class="btn primary" data-act="save">Plek opslaan</button>
+      </div>
+    </div>`;
+  const sheet = openSheet({ title, body, full: true });
+  const map = createMap($('.spot-map', body), { layer: savedLayer() });
+  $('[data-act="layer"] span', body).textContent = savedLayer() === 'satelliet' ? 'Kaart' : 'Satelliet';
+  const center = start || fallback;
+  map.setView(center ? [center.lat, center.lng] : NL_VIEW.center, center ? 18 : NL_VIEW.zoom);
+  const marker = L.marker(center ? [center.lat, center.lng] : NL_VIEW.center, { draggable: true, icon: pinIcon('editing'), autoPan: true });
+  let placed = !!start;
+  if (placed) marker.addTo(map);
+  const coords = $('.coords', body);
+  const show = () => { const ll = marker.getLatLng(); coords.textContent = placed ? `${ll.lat.toFixed(6)}, ${ll.lng.toFixed(6)}` : ''; };
+  show();
+  const place = (ll) => { marker.setLatLng(ll); if (!placed) { marker.addTo(map); placed = true; } show(); };
+  marker.on('dragend', show);
+  map.on('click', (e) => place(e.latlng));
+  body.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'layer') {
+      const now = map.toggleLayer();
+      $('[data-act="layer"] span', body).textContent = now === 'satelliet' ? 'Kaart' : 'Satelliet';
+    }
+    if (act === 'gps') {
+      try {
+        const p = await getPosition({ timeout: 10000, maximumAge: 0 });
+        place([p.lat, p.lng]);
+        map.setView([p.lat, p.lng], Math.max(map.getZoom(), 18));
+      } catch (err) { toast(err.message, 'warn'); }
+    }
+    if (act === 'clear') { await onClear(); sheet.close(); }
+    if (act === 'save') {
+      if (!placed) { toast('Tik eerst op de kaart om de plek te kiezen.', 'warn'); return; }
+      const ll = marker.getLatLng();
+      await onSave({ lat: ll.lat, lng: ll.lng, accuracy: null, byHand: true });
+      sheet.close();
+    }
+  });
   setTimeout(() => map.invalidateSize(), 250);
   return sheet;
 }

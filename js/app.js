@@ -2,7 +2,7 @@
 import * as db from './db.js';
 import { computedConditions, fetchWeather, distanceM, DEFAULT_POS } from './conditions.js';
 import { buildCsv, buildBackup, restoreBackup, saveFile, stamp, sessionHours } from './data-export.js';
-import { MapScreen, openSpotEditor, getPosition } from './map.js';
+import { MapScreen, openSpotEditor, openPointPicker, getPosition } from './map.js';
 import { recognizeLure, getKey, setKey, clearKey, getMode, setMode } from './recognize.js';
 import { FACTORS, MIN_SESSIONS, scope, factorTable, bestCombinations, overall } from './insights.js';
 import {
@@ -214,7 +214,7 @@ function catchRow(f) {
     ${f.photoId ? `<img data-photo="${esc(f.photoId)}" alt="" class="thumb">` : `<span class="thumb empty">${icon('fish')}</span>`}
     <span class="catch-main">
       <strong>${esc(f.species)}${f.lengthCm ? ` · ${fmtNum(f.lengthCm, f.lengthCm % 1 ? 1 : 0)} cm` : ''}</strong>
-      <span class="muted">${fmtTime(new Date(f.at))} · ${esc(f.method)} · ${esc(lureName(f.lure))}</span>
+      <span class="muted">${fmtTime(new Date(f.at))} · ${esc(f.method)} · ${esc(lureName(f.lure))}${f.position ? ` <span class="has-place" title="Plek vastgelegd">${icon('pin')}</span>` : ''}</span>
     </span>
   </button>`;
 }
@@ -400,6 +400,11 @@ function openCatchSheet(s, existing = null, onSaved = null) {
   const defaultSpecies = f.species || (s.method === 'Vliegvissen' ? (s.targetSpecies.find((x) => FLY_SPECIES.includes(x)) || s.targetSpecies[0]) : s.targetSpecies[0]) || 'Snoek';
   // Bij een afgeronde sessie (achteraf invullen) begint de tijd bij de start van de sessie.
   const at = f.at ? new Date(f.at) : s.endedAt ? new Date(s.startedAt) : new Date();
+  // FL-22: bij een nieuwe vangst tijdens een lopende sessie wordt de plek op de achtergrond bepaald.
+  const live = !existing && !s.endedAt;
+  let place = f.position || null;
+  let placeTouched = false;
+  let gpsPending = live;
   const body = el(`<form class="form" novalidate>
     <div class="field"><span class="label">Soort</span>${chips('species', SPECIES, defaultSpecies)}</div>
     <label class="field length-field">
@@ -412,6 +417,13 @@ function openCatchSheet(s, existing = null, onSaved = null) {
         <img class="photo-preview" alt="Foto van de vangst" ${f.photoId ? `data-photo="${esc(f.photoId)}"` : 'hidden'}>
         <label class="btn ghost small" for="catch-photo">${icon('camera')} ${f.photoId ? 'Andere foto' : 'Foto maken of kiezen'}</label>
         <input id="catch-photo" type="file" accept="image/*" hidden>
+      </div>
+    </div>
+    <div class="field">
+      <span class="label">Plek</span>
+      <div class="place-row">
+        <span class="place-text" aria-live="polite"></span>
+        <button type="button" class="btn ghost small" id="catch-place">${icon('map')} Op kaart</button>
       </div>
     </div>
     <details class="more">
@@ -429,6 +441,36 @@ function openCatchSheet(s, existing = null, onSaved = null) {
   wireChips(body);
   const sheet = openSheet({ title: existing ? 'Vangst bewerken' : 'Vangst', body });
   fillPhotos(body);
+
+  const showPlace = () => {
+    const t = $('.place-text', body);
+    if (place) t.textContent = place.byHand ? 'Op de kaart gekozen' : `Huidige locatie${place.accuracy ? ` (± ${place.accuracy} m)` : ''}`;
+    else if (gpsPending) t.innerHTML = '<span class="spinner" aria-hidden="true"></span> Locatie bepalen…';
+    else t.textContent = 'Geen plek vastgelegd';
+  };
+  showPlace();
+  const gpsPromise = live
+    ? getPosition({ timeout: 20000, maximumAge: 0 })
+        .then((p) => ({ lat: p.lat, lng: p.lng, accuracy: p.accuracy, byHand: false }))
+        .catch(() => null)
+        .then((p) => {
+          gpsPending = false;
+          if (p && !placeTouched) place = p;
+          if (document.body.contains(body)) showPlace();
+          return p;
+        })
+    : null;
+  $('#catch-place', body).addEventListener('click', () => {
+    const fallback = s.position || (s.spot ? { lat: s.spot.lat, lng: s.spot.lng } : null);
+    openPointPicker({
+      title: 'Plek van de vangst',
+      start: place,
+      fallback,
+      hint: 'Sleep de stip naar de plek waar je de vis ving, of tik op de kaart.',
+      onSave: (p) => { place = p; placeTouched = true; gpsPending = false; showPlace(); },
+      onClear: () => { place = null; placeTouched = true; gpsPending = false; showPlace(); },
+    });
+  });
 
   let newPhoto = null;
   $('#catch-photo', body).addEventListener('change', async (e) => {
@@ -485,6 +527,7 @@ function openCatchSheet(s, existing = null, onSaved = null) {
       lure: lureId ? lureSnap(lureById(lureId)) || f.lure || null : null,
       photoId,
       notes: $('#catch-notes', body).value.trim(),
+      position: place,
     };
     s.catches = existing ? s.catches.map((x) => (x.id === f.id ? record : x)) : [...s.catches, record];
     s.catches.sort((a, b) => a.at.localeCompare(b.at));
@@ -493,6 +536,16 @@ function openCatchSheet(s, existing = null, onSaved = null) {
     render();
     onSaved && onSaved();
     if (!existing) toast(`${record.species}${record.lengthCm ? ` van ${fmtNum(record.lengthCm, record.lengthCm % 1 ? 1 : 0)} cm` : ''} opgeslagen`);
+    // GPS nog bezig? Dan de plek aanvullen zodra die bekend is; opslaan hoeft er niet op te wachten.
+    if (gpsPromise && !place && !placeTouched) {
+      gpsPromise.then(async (p) => {
+        const saved = s.catches.find((x) => x.id === record.id);
+        if (!p || !saved || saved.position) return;
+        saved.position = p;
+        await saveSession(s);
+        if (state.tab === 'vissen' || state.tab === 'kaart') render();
+      });
+    }
   });
 }
 
@@ -1199,6 +1252,22 @@ function shell() {
     statsFor: spotStats,
     onEditSpot: editSpot,
     onNewSpot: () => openSpotEditor({ onSave: saveSpot }),
+    getCatches: async () =>
+      state.sessions.flatMap((s) =>
+        s.catches
+          .filter((c) => c.position)
+          .map((c) => ({
+            lat: c.position.lat,
+            lng: c.position.lng,
+            species: c.species,
+            lengthCm: c.lengthCm,
+            when: `${fmtDate(new Date(c.at))} ${fmtTime(new Date(c.at))}`,
+            lure: c.lure ? lureName(c.lure) : '',
+            spotName: s.spot?.name || '',
+            sessionId: s.id,
+          })),
+      ),
+    onOpenSession: (id) => openSessionDetail(id),
   });
 }
 
