@@ -11,9 +11,7 @@ import {
 } from './ui.js';
 
 export const SPECIES = ['Snoek', 'Snoekbaars', 'Baars', 'Forel', 'Kopvoorn', 'Ruisvoorn', 'Winde', 'Overig'];
-const FLY_SPECIES = ['Forel', 'Kopvoorn', 'Ruisvoorn', 'Winde'];
-const DEFAULT_METHODS = ['Jerken', 'Dropshotten', 'Jiggen', 'Spinnen', 'Vliegvissen'];
-const LURE_TYPES = ['Jerkbait', 'Shad', 'Plug', 'Spinner', 'Lepel', 'Spinnerbait', 'Topwater', 'Dropshot-aas', 'Jig + softbait', 'Vlieg', 'Overig'];
+import { LURE_TYPES, LEGACY_TYPES, FLY_TYPE, categoryOf, isFlySession } from './lure-types.js';
 const WATER = ['Helder', 'Licht troebel', 'Troebel'];
 const PLATFORMS = ['Kant', 'Wadend', 'Boot'];
 
@@ -22,14 +20,10 @@ const state = {
   spots: [],
   lures: [],
   sessions: [],
-  methods: DEFAULT_METHODS,
-  hiddenMethods: [],
   last: {},
   photoUrls: new Map(),
 };
 
-/** Zichtbare methodes, plus een verborgen methode als die nu in gebruik is. */
-const allMethods = (include) => (include && !state.methods.includes(include) ? [...state.methods, include] : state.methods);
 const active = () => state.sessions.find((s) => !s.endedAt) || null;
 const spotById = (id) => state.spots.find((s) => s.id === id);
 const lureById = (id) => state.lures.find((l) => l.id === id);
@@ -46,9 +40,24 @@ async function load() {
   state.spots = spots.sort((a, b) => a.name.localeCompare(b.name, 'nl'));
   state.lures = lures.sort((a, b) => (a.type + a.name).localeCompare(b.type + b.name, 'nl'));
   state.sessions = sessions.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-  state.methods = await db.getSetting('methods', DEFAULT_METHODS);
-  state.hiddenMethods = await db.getSetting('hiddenMethods', []);
+  await migrateLureTypes();
   state.last = await db.getSetting('lastChoices', {});
+}
+
+/**
+ * FL-26/27: zet kunstaas één keer om naar de nieuwe categorieën.
+ * Lepel en Overig krijgen geen categorie (de tackle box vraagt erom); vliegen worden verborgen.
+ */
+async function migrateLureTypes() {
+  // Draait bij elke start (ook na het terugzetten van een oude back-up); raakt alleen oude categorieën.
+  for (const l of state.lures) {
+    let changed = false;
+    if (LEGACY_TYPES[l.type]) { l.type = LEGACY_TYPES[l.type]; changed = true; }
+    else if (l.type === FLY_TYPE) { if (!l.archived && !l.flyHidden) { l.archived = true; l.flyHidden = true; changed = true; } }
+    else if (l.type && !LURE_TYPES.includes(l.type)) { l.legacyType = l.type; l.type = ''; changed = true; }
+    if (changed) await db.put('lures', l);
+  }
+  state.lures.sort((a, b) => (a.type + a.name).localeCompare(b.type + b.name, 'nl'));
 }
 
 async function saveSession(s) {
@@ -188,7 +197,8 @@ function renderVissen() {
     <section class="rig card">
       <div>
         <p class="eyebrow">Nu aan je lijn</p>
-        <p class="rig-main">${esc(s.method)} · ${esc(lureName(s.lure))}</p>
+        <p class="rig-main">${esc(lureName(s.lure))}</p>
+        ${categoryOf(s.lure) ? `<p class="muted small">${esc(categoryOf(s.lure))}</p>` : ''}
       </div>
       <button class="btn ghost small" id="change-rig" type="button">Wissel</button>
     </section>
@@ -218,9 +228,9 @@ function renderVissen() {
 
 // ----- Aanbeten en missers tellen (FL-9) -----
 
-/** Telt een aanbeet zonder vangst met één tik: tijd, aas en methode gaan mee, de plek volgt op de achtergrond. */
+/** Telt een aanbeet zonder vangst met één tik: tijd en aas gaan mee, de plek volgt op de achtergrond. */
 async function addBite(s) {
-  const bite = { id: db.uid(), at: new Date().toISOString(), method: s.method, lureId: s.lureId, lure: s.lure, position: null };
+  const bite = { id: db.uid(), at: new Date().toISOString(), lureId: s.lureId, lure: s.lure, position: null };
   s.bites = [...(s.bites || []), bite];
   await saveSession(s);
   if (navigator.vibrate) { try { navigator.vibrate(15); } catch (_) { /* geen trilling */ } }
@@ -249,7 +259,7 @@ function catchRow(f) {
     ${f.photoId ? `<img data-photo="${esc(f.photoId)}" alt="" class="thumb">` : `<span class="thumb empty">${icon('fish')}</span>`}
     <span class="catch-main">
       <strong>${esc(f.species)}${f.lengthCm ? ` · ${fmtNum(f.lengthCm, f.lengthCm % 1 ? 1 : 0)} cm` : ''}</strong>
-      <span class="muted">${fmtTime(new Date(f.at))} · ${esc(f.method)} · ${esc(lureName(f.lure))}${f.position ? ` <span class="has-place" title="Plek vastgelegd">${icon('pin')}</span>` : ''}</span>
+      <span class="muted">${fmtTime(new Date(f.at))} · ${esc(lureName(f.lure))}${f.position ? ` <span class="has-place" title="Plek vastgelegd">${icon('pin')}</span>` : ''}</span>
     </span>
   </button>`;
 }
@@ -311,14 +321,15 @@ function lureUsage() {
  */
 function mountLurePicker(container, selectedId) {
   const usage = lureUsage();
-  const lures = state.lures.filter((l) => !l.archived || l.id === selectedId);
-  const picker = { value: selectedId && lureById(selectedId) ? selectedId : null };
+  const lures = state.lures.filter((l) => (!l.archived || l.id === selectedId) && categoryOf(l));
+  const picker = { value: selectedId && lures.some((l) => l.id === selectedId) ? selectedId : null };
   if (!lures.length) {
     container.innerHTML = `<p class="muted">Je tackle box is nog leeg. Voeg kunstaas toe via het tabblad Tackle box; dan kies je het hier met een tik op de foto.</p>`;
     return picker;
   }
   const typeUse = new Map();
   for (const l of lures) typeUse.set(l.type, (typeUse.get(l.type) || 0) + (usage.get(l.id) || 0));
+  const unsorted = state.lures.filter((l) => !l.archived && !categoryOf(l)).length;
   const types = [...typeUse.keys()].sort((a, b) => typeUse.get(b) - typeUse.get(a) || LURE_TYPES.indexOf(a) - LURE_TYPES.indexOf(b));
   const firstOfType = (t) => lures.find((l) => l.type === t && l.photoId) || lures.find((l) => l.type === t);
   let type = picker.value ? lureById(picker.value).type : types[0];
@@ -341,6 +352,7 @@ function mountLurePicker(container, selectedId) {
           <span class="type-ini" aria-hidden="true">–</span><span>Geen aas</span>
         </button>
       </div>
+      ${unsorted ? `<p class="hint small">${unsorted} ${unsorted === 1 ? 'aas heeft' : 'aasjes hebben'} nog geen categorie. Kies die in de Tackle box.</p>` : ''}
       ${type === null ? `<p class="muted picker-note">Je start zonder aas. Kies later via Wissel.</p>` : `
       <div class="carousel lure-carousel" role="radiogroup" aria-label="${esc(type)}">
         ${inType.map((l) => `<button type="button" class="lure-card ${l.id === picker.value ? 'on' : ''}" data-pick="${esc(l.id)}" role="radio" aria-checked="${l.id === picker.value}">
@@ -388,7 +400,7 @@ function mountLurePicker(container, selectedId) {
 }
 
 function lureOptions(selectedId) {
-  const active = state.lures.filter((l) => !l.archived || l.id === selectedId);
+  const active = state.lures.filter((l) => (!l.archived && categoryOf(l)) || l.id === selectedId);
   const groups = LURE_TYPES.map((t) => [t, active.filter((l) => l.type === t)]).filter(([, ls]) => ls.length);
   return `<option value="">Geen / niet in tackle box</option>${groups
     .map(([t, ls]) => `<optgroup label="${esc(t)}">${ls
@@ -406,7 +418,6 @@ function openStartSheet() {
       <button type="button" class="btn ghost small" id="new-spot">${icon('pin')} Nieuwe stek op de kaart</button>
     </div>
     <div class="field"><span class="label">Doelsoort(en)</span>${chips('species', SPECIES, last.targetSpecies || ['Snoek'], { multi: true })}</div>
-    <div class="field"><span class="label">Methode</span>${chips('method', state.methods, state.methods.includes(last.method) ? last.method : state.methods[0])}</div>
     <div class="field"><span class="label">Kunstaas</span><div id="start-lure"></div></div>
     <div class="field"><span class="label">Waterhelderheid</span>${chips('water', WATER, last.waterClarity || 'Licht troebel')}</div>
     <div class="field"><span class="label">Je vist vanaf</span>${chips('platform', PLATFORMS, 'Kant')}</div>
@@ -464,7 +475,6 @@ function openStartSheet() {
     const targetSpecies = chipValue(body, 'species');
     if (!targetSpecies.length) { toast('Kies minstens één doelsoort.', 'warn'); return; }
     const spot = spotById(selectedSpot);
-    const method = chipValue(body, 'method');
     const lureId = lurePicker.value || null;
     const lure = lureById(lureId);
     const waterClarity = chipValue(body, 'water');
@@ -478,18 +488,17 @@ function openStartSheet() {
       spot: { id: spot.id, name: spot.name, lat: spot.lat, lng: spot.lng },
       position,
       targetSpecies,
-      method,
       lureId,
       lure: lureSnap(lure),
       waterClarity,
       platform,
       conditions: computedConditions(now, position),
       weather: { status: 'loading' },
-      changes: [{ at: now.toISOString(), method, lureId, lure: lureSnap(lure) }],
+      changes: [{ at: now.toISOString(), lureId, lure: lureSnap(lure) }],
       catches: [],
       notes: '',
     };
-    state.last = { targetSpecies, method, lureId, waterClarity };
+    state.last = { targetSpecies, lureId, waterClarity };
     await db.setSetting('lastChoices', state.last);
     await saveSession(session);
     sheet.close();
@@ -499,25 +508,24 @@ function openStartSheet() {
   });
 }
 
-// ----- Wissel aas of methode -----
+// ----- Wissel van aas -----
 
 function openRigSheet(s) {
   const body = el(`<form class="form" novalidate>
-    <div class="field"><span class="label">Methode</span>${chips('method', allMethods(s.method), s.method)}</div>
     <div class="field"><span class="label">Kunstaas</span><div id="rig-lure"></div></div>
     <button type="submit" class="btn primary wide">Opslaan</button>
   </form>`);
   wireChips(body);
-  const sheet = openSheet({ title: 'Wissel aas of methode', body });
+  const sheet = openSheet({ title: 'Wissel van aas', body });
   const lurePicker = mountLurePicker($('#rig-lure', body), s.lureId);
   body.addEventListener('submit', async (e) => {
     e.preventDefault();
-    s.method = chipValue(body, 'method');
+    if ((lurePicker.value || null) === (s.lureId || null)) { sheet.close(); return; }
     s.lureId = lurePicker.value || null;
     s.lure = lureSnap(lureById(s.lureId));
-    const change = { id: db.uid(), at: new Date().toISOString(), method: s.method, lureId: s.lureId, lure: s.lure, position: null };
+    const change = { id: db.uid(), at: new Date().toISOString(), lureId: s.lureId, lure: s.lure, position: null };
     s.changes = [...(s.changes || []), change];
-    state.last = { ...state.last, method: s.method, lureId: s.lureId };
+    state.last = { ...state.last, lureId: s.lureId };
     await db.setSetting('lastChoices', state.last);
     await saveSession(s);
     sheet.close();
@@ -538,7 +546,7 @@ function openRigSheet(s) {
 
 function openCatchSheet(s, existing = null, onSaved = null) {
   const f = existing || {};
-  const defaultSpecies = f.species || (s.method === 'Vliegvissen' ? (s.targetSpecies.find((x) => FLY_SPECIES.includes(x)) || s.targetSpecies[0]) : s.targetSpecies[0]) || 'Snoek';
+  const defaultSpecies = f.species || s.targetSpecies[0] || 'Snoek';
   // Bij een afgeronde sessie (achteraf invullen) begint de tijd bij de start van de sessie.
   const at = f.at ? new Date(f.at) : s.endedAt ? new Date(s.startedAt) : new Date();
   // FL-22: bij een nieuwe vangst tijdens een lopende sessie wordt de plek op de achtergrond bepaald.
@@ -568,8 +576,7 @@ function openCatchSheet(s, existing = null, onSaved = null) {
       </div>
     </div>
     <details class="more">
-      <summary>Aas, methode, tijd en notitie</summary>
-      <div class="field"><span class="label">Methode</span>${chips('method', allMethods(f.method || s.method), f.method || s.method)}</div>
+      <summary>Aas, tijd en notitie</summary>
       <label class="field"><span class="label">Kunstaas</span><select id="catch-lure">${lureOptions(existing ? f.lureId : s.lureId)}</select></label>
       <label class="field"><span class="label">Tijdstip</span><input id="catch-time" type="time" value="${fmtTime(at)}"></label>
       <label class="field"><span class="label">Notitie</span><textarea id="catch-notes" rows="2" maxlength="500" placeholder="Bijv. aanbeet vlak bij de rietkraag">${esc(f.notes || '')}</textarea></label>
@@ -663,7 +670,6 @@ function openCatchSheet(s, existing = null, onSaved = null) {
       at: when.toISOString(),
       species: chipValue(body, 'species'),
       lengthCm,
-      method: chipValue(body, 'method'),
       lureId,
       lure: lureId ? lureSnap(lureById(lureId)) || f.lure || null : null,
       photoId,
@@ -781,7 +787,7 @@ function renderLogboek() {
           <span class="log-date"><span class="d">${start.getDate()}</span><span class="m">${fmtDate(start).split(' ')[2]}</span></span>
           <span class="log-main">
             <strong>${esc(s.spot?.name || '')}</strong>
-            <span class="muted">${fmtDate(start).split(' ')[0]} ${fmtTime(start)}–${fmtTime(new Date(s.endedAt))} · ${esc(s.method)} · ${esc(s.conditions?.dayPart || '')}</span>
+            <span class="muted">${fmtDate(start).split(' ')[0]} ${fmtTime(start)}–${fmtTime(new Date(s.endedAt))} · ${esc(lureShort((s.changes && s.changes[0] ? s.changes[0].lure : s.lure)))} · ${esc(s.conditions?.dayPart || '')}</span>
           </span>
           <span class="log-fish ${s.catches.length ? '' : 'zero'}"><b>${s.catches.length}</b><small>${sRate(s)}/u</small></span>
         </button></li>`;
@@ -929,19 +935,17 @@ function openRestoreSheet(file) {
   });
 }
 
-/** Alle methodes en al het aas dat in een sessie is gebruikt, in volgorde van eerste gebruik. */
+/** Al het aas dat in een sessie is gebruikt, in volgorde van eerste gebruik. */
 function usedInSession(s) {
-  const methods = [];
   const lures = [];
-  const addM = (m) => { if (m && !methods.includes(m)) methods.push(m); };
   const addL = (l) => { const n = l ? l.name || l.type : ''; if (n && !lures.includes(n)) lures.push(n); };
-  const picks = s.changes && s.changes.length ? s.changes : [{ method: s.method, lure: s.lure }];
-  for (const c of picks) { addM(c.method); addL(c.lure); }
-  for (const f of s.catches) { addM(f.method); addL(f.lure); }
-  return { methods, lures };
+  const picks = s.changes && s.changes.length ? s.changes : [{ lure: s.lure }];
+  for (const c of picks) addL(c.lure);
+  for (const f of s.catches) addL(f.lure);
+  return { lures };
 }
 
-const lureShort = (l) => (l ? l.name || l.type : 'geen aas');
+function lureShort(l) { return l ? l.name || l.type : 'geen aas'; }
 
 function sessionMapItems(s) {
   const t = (x) => fmtTime(new Date(x.at));
@@ -954,7 +958,7 @@ function sessionMapItems(s) {
       sub: `${t(f)} · ${lureShort(f.lure)}`,
     })),
     bites: (s.bites || []).filter((b) => b.position).map((b) => ({ lat: b.position.lat, lng: b.position.lng, title: 'Misser', sub: `${t(b)} · ${lureShort(b.lure)}` })),
-    switches: (s.changes || []).slice(1).filter((c) => c.position).map((c) => ({ lat: c.position.lat, lng: c.position.lng, title: `Wissel · ${t(c)}`, sub: `${c.method} · ${lureShort(c.lure)}` })),
+    switches: (s.changes || []).slice(1).filter((c) => c.position).map((c) => ({ lat: c.position.lat, lng: c.position.lng, title: `Wissel · ${t(c)}`, sub: lureShort(c.lure) })),
   };
 }
 
@@ -1000,10 +1004,9 @@ function openSessionDetail(id) {
         <div><dt>Water</dt><dd>${esc(s.waterClarity)}</dd></div>
         <div><dt>Vanaf</dt><dd>${esc(s.platform)}</dd></div>
         <div><dt>Doelsoort</dt><dd>${esc((s.targetSpecies || []).join(', '))}</dd></div>
-        <div class="wide"><dt>${used.methods.length > 1 ? 'Methodes' : 'Methode'}</dt><dd>${esc(used.methods.join(', ') || '–')}</dd></div>
         <div class="wide"><dt>Aas</dt><dd>${esc(used.lures.join(', ') || 'Geen aas')}</dd></div>
       </dl>
-      ${wissels.length ? `<h3 class="section-title">Gewisseld</h3><ul class="switch-list">${wissels.map((w) => `<li><b>${fmtTime(new Date(w.at))}</b> ${esc(w.method)} · ${esc(lureShort(w.lure))}</li>`).join('')}</ul>` : ''}
+      ${wissels.length ? `<h3 class="section-title">Gewisseld</h3><ul class="switch-list">${wissels.map((w) => `<li><b>${fmtTime(new Date(w.at))}</b> ${esc(lureShort(w.lure))}</li>`).join('')}</ul>` : ''}
       <div class="section-row">
         <h3 class="section-title">Missers</h3>
         <div class="stepper" role="group" aria-label="Aanbeten zonder vangst">
@@ -1036,7 +1039,7 @@ function openSessionDetail(id) {
       // Achteraf toegevoegd: midden in de sessie, met het aas van de start.
       const mid = new Date((Date.parse(s.startedAt) + Date.parse(s.endedAt)) / 2).toISOString();
       const first = (s.changes && s.changes[0]) || s;
-      s.bites = [...(s.bites || []), { id: db.uid(), at: mid, method: first.method, lureId: first.lureId, lure: first.lure, position: null, addedLater: true }];
+      s.bites = [...(s.bites || []), { id: db.uid(), at: mid, lureId: first.lureId, lure: first.lure, position: null, addedLater: true }];
       await saveSession(s);
       draw();
       render();
@@ -1064,7 +1067,7 @@ const dateInput = (d) => toLocalInput(d).slice(0, 10);
 
 function openSessionForm(existing = null, onSaved = null) {
   const s = existing;
-  const first = s ? (s.changes && s.changes[0]) || { method: s.method, lureId: s.lureId } : null;
+  const first = s ? (s.changes && s.changes[0]) || { lureId: s.lureId, lure: s.lure } : null;
   const last = state.last;
   const start = s ? new Date(s.startedAt) : (() => { const d = new Date(); d.setHours(d.getHours() - 3, 0, 0, 0); return d; })();
   const end = s ? new Date(s.endedAt) : (() => { const d = new Date(start); d.setHours(d.getHours() + 2); return d; })();
@@ -1080,7 +1083,6 @@ function openSessionForm(existing = null, onSaved = null) {
       <label class="field"><span class="label">Einde</span><input id="sf-end" type="time" value="${fmtTime(end)}"></label>
     </div>
     <div class="field"><span class="label">Doelsoort(en)</span>${chips('species', SPECIES, s?.targetSpecies || last.targetSpecies || ['Snoek'], { multi: true })}</div>
-    <div class="field"><span class="label">Methode${s && s.changes?.length > 1 ? ' bij de start' : ''}</span>${chips('method', allMethods(first?.method), first?.method || last.method || state.methods[0])}</div>
     <label class="field"><span class="label">Kunstaas${s && s.changes?.length > 1 ? ' bij de start' : ''}</span><select id="sf-lure">${lureOptions(s ? first?.lureId : last.lureId)}</select></label>
     <div class="field"><span class="label">Waterhelderheid</span>${chips('water', WATER, s?.waterClarity || last.waterClarity || 'Licht troebel')}</div>
     <div class="field"><span class="label">Je viste vanaf</span>${chips('platform', PLATFORMS, s?.platform || 'Kant')}</div>
@@ -1115,7 +1117,6 @@ function openSessionForm(existing = null, onSaved = null) {
     if ((newEnd - newStart) / 3600e3 > 24) { toast('Een sessie duurt maximaal 24 uur.', 'warn'); return; }
     const targetSpecies = chipValue(body, 'species');
     if (!targetSpecies.length) { toast('Kies minstens één doelsoort.', 'warn'); return; }
-    const method = chipValue(body, 'method');
     const lureId = $('#sf-lure', body).value || null;
     const lure = lureSnap(lureById(lureId)) || (s && first?.lureId === lureId ? first.lure : null);
     const position = { lat: spot.lat, lng: spot.lng, accuracy: spot.accuracy ?? null };
@@ -1133,9 +1134,8 @@ function openSessionForm(existing = null, onSaved = null) {
     record.notes = $('#sf-notes', body).value.trim();
     // Beginsituatie bijwerken; latere wissels blijven staan.
     const later = (record.changes || []).slice(1).filter((c) => Date.parse(c.at) > newStart && Date.parse(c.at) < newEnd);
-    record.changes = [{ at: record.startedAt, method, lureId, lure }, ...later];
+    record.changes = [{ at: record.startedAt, lureId, lure }, ...later];
     const current = record.changes[record.changes.length - 1];
-    record.method = current.method;
     record.lureId = current.lureId;
     record.lure = current.lure;
     if (spotChanged || startChanged) {
@@ -1176,7 +1176,7 @@ function openSessionForm(existing = null, onSaved = null) {
 function renderInzichten() {
   const root = $('#screen-inzichten');
   const species = root.dataset.species || 'Alle';
-  const present = SPECIES.filter((sp) => state.sessions.some((s) => s.endedAt && ((s.targetSpecies || []).includes(sp) || s.catches.some((f) => f.species === sp))));
+  const present = SPECIES.filter((sp) => state.sessions.some((s) => s.endedAt && !isFlySession(s) && ((s.targetSpecies || []).includes(sp) || s.catches.some((f) => f.species === sp))));
   const { sessions, fishOf } = scope(state.sessions, species);
   const tot = overall(sessions, fishOf);
   const enough = tot.sessions >= MIN_SESSIONS;
@@ -1225,7 +1225,7 @@ function renderInzichten() {
         <p class="muted small">${c.sessions} sessies · ${c.fish} ${c.fish === 1 ? 'vis' : 'vissen'}${c.lowData ? ' · <b>te weinig data</b>' : ''}</p>
       </li>`).join('')}</ol>` : `<p class="muted">Een combinatie verschijnt zodra je minstens 3 sessies met dezelfde omstandigheden hebt en daarin vis hebt gevangen.</p>`}
     </section>
-    <p class="hint legend-hint"><span class="avg-swatch" aria-hidden="true"></span> Streepje = je gemiddelde van ${perHour(tot.rate)} per uur. Dagdeel, aas en methode tellen per uur dat je zo viste, ook binnen één sessie.</p>
+    <p class="hint legend-hint"><span class="avg-swatch" aria-hidden="true"></span> Streepje = je gemiddelde van ${perHour(tot.rate)} per uur. Dagdeel en aas tellen per uur dat je zo viste, ook binnen één sessie.</p>
     ${FACTORS.map(factorCard).join('')}`}`;
 
   root.querySelector('.chips')?.addEventListener('click', (e) => {
@@ -1243,6 +1243,10 @@ function renderTackle() {
   const showHidden = root.dataset.showHidden === 'true';
   const list = state.lures.filter((l) => showHidden || !l.archived);
   const groups = LURE_TYPES.map((t) => [t, list.filter((l) => l.type === t)]).filter(([, ls]) => ls.length);
+  const noCat = list.filter((l) => !l.archived && !categoryOf(l));
+  if (noCat.length) groups.unshift(['Kies een categorie', noCat]);
+  const oldHidden = showHidden ? list.filter((l) => l.archived && !categoryOf(l)) : [];
+  if (oldHidden.length) groups.push(['Oude categorie (verborgen)', oldHidden]);
   const hiddenCount = state.lures.filter((l) => l.archived).length;
   root.innerHTML = `
     <header class="screen-head">
@@ -1257,18 +1261,8 @@ function renderTackle() {
           ${l.photoId ? `<img class="swatch photo" data-photo="${esc(l.photoId)}" alt="">` : `<span class="swatch" aria-hidden="true">${esc((l.color || l.type || '?').slice(0, 1).toUpperCase())}</span>`}
           <span class="lure-main"><strong>${esc(l.name || l.type)}</strong><span class="muted">${esc([l.color, l.sizeCm ? `${fmtNum(l.sizeCm, l.sizeCm % 1 ? 1 : 0)} cm` : '', l.weightG ? `${fmtNum(l.weightG, l.weightG % 1 ? 1 : 0)} g` : '', l.action].filter(Boolean).join(' · '))}${l.archived ? ' · verborgen' : ''}</span></span>
         </button>`).join('')}
-      </section>`).join('') : `<div class="card empty-state"><p><strong>Nog geen kunstaas.</strong></p><p class="muted">Voeg je jerkbaits, shads, spinners en vliegen toe. Bij een sessie of vangst kies je ze daarna met één tik.</p></div>`}
+      </section>`).join('') : `<div class="card empty-state"><p><strong>Nog geen kunstaas.</strong></p><p class="muted">Voeg je jerkbaits, shads, pluggen en ander kunstaas toe. Bij een sessie of vangst kies je ze daarna met één tik.</p></div>`}
     ${hiddenCount ? `<button class="btn ghost small" id="toggle-hidden" type="button">${showHidden ? 'Verberg' : 'Toon'} verborgen aas (${hiddenCount})</button>` : ''}
-    <section class="card">
-      <h2 class="section-title">Methodes</h2>
-      <p class="muted small">Tik op een methode om hem te hernoemen of te verbergen.</p>
-      <div class="method-list">${state.methods.map((m) => `<button type="button" class="chip on" data-method="${esc(m)}">${esc(m)} ${icon('edit')}</button>`).join('')}</div>
-      ${state.hiddenMethods.length ? `<p class="muted small">Verborgen: ${state.hiddenMethods.map((m) => `<button type="button" class="link-btn" data-unhide="${esc(m)}">${esc(m)} tonen</button>`).join(', ')}</p>` : ''}
-      <form class="inline-add" id="add-method" novalidate>
-        <input id="new-method" type="text" maxlength="30" placeholder="Nieuwe methode, bijv. Trollen" aria-label="Nieuwe methode">
-        <button class="btn small" type="submit">Toevoegen</button>
-      </form>
-    </section>
     <section class="card">
       <h2 class="section-title">Kunstaas herkennen</h2>
       <p id="recog-state" class="muted"></p>
@@ -1285,27 +1279,6 @@ function renderTackle() {
   $$('[data-lure]', root).forEach((b) => b.addEventListener('click', () => openLureSheet(lureById(b.dataset.lure))));
   $('#toggle-hidden', root)?.addEventListener('click', () => {
     root.dataset.showHidden = String(!showHidden);
-    renderTackle();
-  });
-  $$('[data-method]', root).forEach((b) => b.addEventListener('click', () => openMethodSheet(b.dataset.method)));
-  $$('[data-unhide]', root).forEach((b) => b.addEventListener('click', async () => {
-    const m = b.dataset.unhide;
-    state.hiddenMethods = state.hiddenMethods.filter((x) => x !== m);
-    state.methods = [...state.methods, m];
-    await db.setSetting('methods', state.methods);
-    await db.setSetting('hiddenMethods', state.hiddenMethods);
-    renderTackle();
-  }));
-  $('#add-method', root).addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const v = $('#new-method', root).value.trim();
-    if (!v) return;
-    if (state.methods.some((m) => m.toLowerCase() === v.toLowerCase())) { toast('Deze methode bestaat al.', 'warn'); return; }
-    const hidden = state.hiddenMethods.find((m) => m.toLowerCase() === v.toLowerCase());
-    if (hidden) state.hiddenMethods = state.hiddenMethods.filter((m) => m !== hidden);
-    state.methods = [...state.methods, hidden || v];
-    await db.setSetting('methods', state.methods);
-    await db.setSetting('hiddenMethods', state.hiddenMethods);
     renderTackle();
   });
 }
@@ -1354,51 +1327,6 @@ async function openKeySheet(onDone) {
   });
 }
 
-/** Methode hernoemen (werkt door in alle sessies) of verbergen (blijft in je statistieken). */
-function openMethodSheet(name) {
-  const used = state.sessions.filter((s) => s.method === name || (s.changes || []).some((c) => c.method === name) || s.catches.some((f) => f.method === name)).length;
-  const body = el(`<form class="form" novalidate>
-    <label class="field"><span class="label">Naam</span><input id="method-name" type="text" maxlength="30" value="${esc(name)}"></label>
-    <p class="hint">${used ? `Gebruikt in ${used} ${used === 1 ? 'sessie' : 'sessies'}. Een nieuwe naam wordt daar ook aangepast.` : 'Nog niet gebruikt in een sessie.'}</p>
-    <div class="actions">
-      <button type="button" class="btn ghost" id="method-hide">Verbergen</button>
-      <button type="submit" class="btn primary">Opslaan</button>
-    </div>
-  </form>`);
-  const sheet = openSheet({ title: 'Methode', body });
-  $('#method-hide', body).addEventListener('click', async () => {
-    if (state.methods.length <= 1) { toast('Houd minstens één methode over.', 'warn'); return; }
-    state.methods = state.methods.filter((m) => m !== name);
-    state.hiddenMethods = [...state.hiddenMethods, name];
-    await db.setSetting('methods', state.methods);
-    await db.setSetting('hiddenMethods', state.hiddenMethods);
-    sheet.close();
-    renderTackle();
-    toast(`${name} verborgen. Oude sessies blijven meetellen.`);
-  });
-  body.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const v = $('#method-name', body).value.trim();
-    if (!v) { toast('Geef de methode een naam.', 'warn'); return; }
-    if (v !== name && [...state.methods, ...state.hiddenMethods].some((m) => m.toLowerCase() === v.toLowerCase())) { toast('Deze methode bestaat al.', 'warn'); return; }
-    if (v !== name) {
-      state.methods = state.methods.map((m) => (m === name ? v : m));
-      for (const s of state.sessions) {
-        let changed = false;
-        if (s.method === name) { s.method = v; changed = true; }
-        for (const c of s.changes || []) if (c.method === name) { c.method = v; changed = true; }
-        for (const f of s.catches) if (f.method === name) { f.method = v; changed = true; }
-        if (changed) await db.put('sessions', s);
-      }
-      if (state.last.method === name) { state.last.method = v; await db.setSetting('lastChoices', state.last); }
-      await db.setSetting('methods', state.methods);
-      toast(`Hernoemd naar ${v}`);
-    }
-    sheet.close();
-    renderTackle();
-  });
-}
-
 function openLureSheet(lure = null) {
   const l = lure || {};
   const body = el(`<form class="form" novalidate>
@@ -1414,7 +1342,8 @@ function openLureSheet(lure = null) {
       </div>
       <input id="lure-photo-input" type="file" accept="image/*" hidden>
     </div>
-    <div class="field"><span class="label">Type</span>${chips('type', LURE_TYPES, l.type || 'Jerkbait')}</div>
+    <div class="field"><span class="label">Categorie</span>${chips('type', LURE_TYPES, categoryOf(l) || (lure ? null : 'Jerkbaits'))}</div>
+    ${lure && !categoryOf(l) ? `<p class="hint warn-text">Dit aas stond onder "${esc(l.legacyType || l.type || 'geen categorie')}". Kies een nieuwe categorie.</p>` : ''}
     <label class="field"><span class="label">Naam of model</span><input id="lure-name" type="text" maxlength="60" placeholder="Bijv. Buster Jerk II" value="${esc(l.name || '')}"></label>
     <label class="field"><span class="label">Kleur</span><input id="lure-color" type="text" maxlength="40" placeholder="Bijv. firetiger, voorn, zwart" value="${esc(l.color || '')}"></label>
     <div class="two">
@@ -1505,6 +1434,8 @@ function openLureSheet(lure = null) {
       createdAt: l.createdAt || new Date().toISOString(),
       ...extra,
     };
+    if (!record.type) { toast('Kies een categorie.', 'warn'); return; }
+    delete record.legacyType;
     if (!record.name && !record.color) { toast('Vul een naam of kleur in, zodat je het aas herkent.', 'warn'); return; }
     if (newPhoto) {
       if (record.photoId) { await db.del('photos', record.photoId); state.photoUrls.delete(record.photoId); }

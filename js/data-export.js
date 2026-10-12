@@ -1,5 +1,6 @@
 // Export naar Excel (CSV) en back-up / terugzetten.
 import * as db from './db.js';
+import { categoryOf } from './lure-types.js';
 
 const num = (v, digits = 1) =>
   v == null || Number.isNaN(v) ? '' : Number(v).toFixed(digits).replace('.', ',');
@@ -25,13 +26,13 @@ export function catchRate(s) {
 
 const HEADER = [
   'sessie_id', 'datum', 'start', 'eind', 'duur_uur', 'stek', 'breedtegraad', 'lengtegraad', 'visplek',
-  'doelsoorten', 'methode_start', 'aas_start', 'waterhelderheid', 'dagdeel', 'seizoen', 'maand', 'maanfase',
+  'doelsoorten', 'aascategorie_start', 'aas_start', 'waterhelderheid', 'dagdeel', 'seizoen', 'maand', 'maanfase',
   'temperatuur_c', 'wind_kmu', 'wind_bft', 'windrichting', 'bewolking_pct', 'neerslag_mm', 'luchtdruk_hpa',
   'drukverloop', 'drukverschil_3u_hpa', 'weer', 'vissen_in_sessie', 'aanbeten_zonder_vangst', 'vangst_per_uur',
-  'vangst_tijd', 'soort', 'lengte_cm', 'vangst_aas', 'vangst_methode', 'vangst_notitie', 'vangst_breedtegraad', 'vangst_lengtegraad', 'sessie_notitie',
+  'vangst_tijd', 'soort', 'lengte_cm', 'vangst_aas', 'vangst_aascategorie', 'vangst_notitie', 'vangst_breedtegraad', 'vangst_lengtegraad', 'sessie_notitie',
 ];
 
-const lureLabel = (l) => (l ? [l.type, l.name, l.color, l.sizeCm ? `${l.sizeCm} cm` : ''].filter(Boolean).join(' · ') : '');
+const lureLabel = (l) => (l ? [l.name, l.color, l.sizeCm ? `${l.sizeCm} cm` : ''].filter(Boolean).join(' · ') : '');
 
 /** Eén rij per vangst; een sessie zonder vangst krijgt één rij met lege vangstkolommen. */
 export function buildCsv(sessions) {
@@ -46,7 +47,7 @@ export function buildCsv(sessions) {
     const base = [
       s.id, dateStr(start), timeStr(start), timeStr(end), num(sessionHours(s), 2),
       s.spot?.name, pos.lat != null ? pos.lat.toFixed(6).replace('.', ',') : '', pos.lng != null ? pos.lng.toFixed(6).replace('.', ',') : '',
-      s.platform, (s.targetSpecies || []).join(', '), s.changes?.[0]?.method ?? s.method, lureLabel(s.changes?.[0] ? s.changes[0].lure : s.lure), s.waterClarity,
+      s.platform, (s.targetSpecies || []).join(', '), categoryOf(s.changes?.[0] ? s.changes[0].lure : s.lure) || '', lureLabel(s.changes?.[0] ? s.changes[0].lure : s.lure), s.waterClarity,
       c.dayPart, c.season, c.month, c.moonPhase,
       num(w.tempC), num(w.windKmh, 0), w.windBft ?? '', w.windDir, w.cloudPct ?? '', num(w.precipMm),
       num(w.pressureHpa), w.pressureTrend, num(w.pressureDelta3h), w.desc,
@@ -57,7 +58,7 @@ export function buildCsv(sessions) {
     } else {
       for (const f of s.catches) {
         const fp = f.position;
-        rows.push([...base, timeStr(new Date(f.at)), f.species, num(f.lengthCm), lureLabel(f.lure), f.method, f.notes,
+        rows.push([...base, timeStr(new Date(f.at)), f.species, num(f.lengthCm), lureLabel(f.lure), categoryOf(f.lure) || '', f.notes,
           fp ? fp.lat.toFixed(6).replace('.', ',') : '', fp ? fp.lng.toFixed(6).replace('.', ',') : '', s.notes]);
       }
     }

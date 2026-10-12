@@ -1,14 +1,14 @@
 # Fish Logger
 
-Logboek voor vissessies (snoek, snoekbaars, baars met kunstaas; forel, kopvoorn, ruisvoorn en winde met de vlieg). Het doel is patronen te ontdekken: onder welke omstandigheden vang je het meest per uur?
+Logboek voor vissessies met kunstaas (snoek, snoekbaars, baars en meer). Vliegvissen krijgt later een eigen flow. Het doel is patronen te ontdekken: onder welke omstandigheden vang je het meest per uur?
 
 ## Release 1
 
 - Sessie starten en stoppen: tijd, GPS-locatie, weer (Open-Meteo), luchtdruk en drukverloop, dagdeel, seizoen en maanfase worden automatisch vastgelegd. Ook sessies zonder vangst worden opgeslagen.
 - Stekken op een satellietkaart, met een versleepbare pin en de GPS-nauwkeurigheid in meters.
-- Methode, kunstaas, waterhelderheid en visplek (kant, wadend, boot) kies je met één tik.
-- Vangsten met soort, lengte (cm), tijd, aas, methode en foto.
-- Tackle box met je eigen kunstaas en methodes.
+- Kunstaas (in categorieën), waterhelderheid en visplek (kant, wadend, boot) kies je met één tik.
+- Vangsten met soort, lengte (cm), tijd, aas, plek en foto.
+- Tackle box met je eigen kunstaas in vaste categorieën.
 - Logboek met vangst per uur, export naar Excel (CSV) en back-up / terugzetten.
 
 ## Techniek

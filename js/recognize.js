@@ -39,12 +39,12 @@ export class RecognizeError extends Error {
 function lureTool(types) {
   return {
     name: 'kunstaas',
-    description: 'Leg vast welk kunstaas of welke kunstvlieg op de foto staat. Roep dit altijd als laatste stap aan.',
+    description: 'Leg vast welk kunstaas op de foto staat. Roep dit altijd als laatste stap aan.',
     input_schema: {
       type: 'object',
       properties: {
-        herkend: { type: 'boolean', description: 'false als er geen kunstaas of kunstvlieg op de foto staat' },
-        type: { type: 'string', enum: types },
+        herkend: { type: 'boolean', description: 'false als er geen kunstaas op de foto staat' },
+        type: { type: 'string', enum: types, description: 'Categorie. Shads = shads met paddle tail op een jigkop of systeem; Dropshot Shads = kleine slanke shads voor dropshot; Softbaits = overige softbaits (creatures, wormen, slugs); Pluggen = crankbaits, wobblers en minnows met lip; Jerkbaits = lipless/glide jerkbaits; Oppervlakte aas = topwater, poppers, walkers.' },
         merk: { type: 'string', description: 'Merk, bijv. "Savage Gear". Leeg als je het niet zeker weet.' },
         model: { type: 'string', description: 'Modelnaam zoals de fabrikant die gebruikt, bijv. "4D Line Thru Pike". Leeg als je het niet zeker weet.' },
         kleur: { type: 'string', description: 'Kleurnaam zoals de fabrikant of vissers die gebruiken (bijv. Firetiger, Roach, Chartreuse)' },
@@ -60,13 +60,13 @@ function lureTool(types) {
   };
 }
 
-const PROMPT_SEARCH = `Dit is een foto van kunstaas voor roofvissen (snoek, snoekbaars, baars) of een kunstvlieg.
+const PROMPT_SEARCH = `Dit is een foto van kunstaas voor roofvissen (snoek, snoekbaars, baars).
 1. Bekijk de foto goed: vorm, lip, ogen, haken, opdruk of logo, en tekst op een eventuele verpakking.
 2. Bepaal welk merk en model het waarschijnlijk is. Gebruik web_search om dat te controleren: zoek op merk, model en kenmerken en vergelijk de productfoto's met deze foto. Zoek ook de lengte en het gewicht van precies deze uitvoering op.
 3. Roep daarna het hulpmiddel kunstaas aan met wat je hebt gevonden.
 Wees eerlijk: als je het model niet zeker weet, laat merk of model leeg of zet zekerheid op laag. Verzin geen gewicht.`;
 
-const PROMPT_PLAIN = `Dit is een foto van kunstaas voor roofvissen of een kunstvlieg. Herken het type, en als het een bekend merk of model is ook merk en model. Gebruik voor het type precies één waarde uit de lijst. Raad geen merk als je het niet herkent. Roep het hulpmiddel kunstaas aan.`;
+const PROMPT_PLAIN = `Dit is een foto van kunstaas voor roofvissen. Herken de categorie, en als het een bekend merk of model is ook merk en model. Gebruik voor de categorie precies één waarde uit de lijst. Raad geen merk als je het niet herkent. Roep het hulpmiddel kunstaas aan.`;
 
 async function callApi(key, body) {
   let res;
@@ -165,7 +165,7 @@ export async function recognizeLure(blob, types, onProgress = () => {}) {
   const name = [r.merk, r.model].map((x) => (x || '').trim()).filter(Boolean).join(' ');
   const source = typeof r.bron === 'string' && /^https?:\/\//.test(r.bron) ? r.bron : '';
   return {
-    type: types.includes(r.type) ? r.type : 'Overig',
+    type: types.includes(r.type) ? r.type : '',
     name,
     color: (r.kleur || '').trim(),
     sizeCm: typeof r.maat_cm === 'number' && r.maat_cm > 0 ? Math.round(r.maat_cm * 2) / 2 : null,

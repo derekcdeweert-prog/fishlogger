@@ -378,6 +378,8 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; 
 .switch-mark path { fill: var(--water); stroke: #fff; stroke-width: 2; }
 .facts .wide { grid-column: 1 / -1; }
 
+.warn-text { color: var(--warn); }
+
 /* ---------- Inzichten ---------- */
 .bars { display: flex; flex-direction: column; gap: 14px; }
 .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; }

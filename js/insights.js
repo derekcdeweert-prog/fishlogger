@@ -1,5 +1,6 @@
 // Inzichten: vangst per uur per factor en de beste combinaties.
 import { dayPart, DAY_PARTS, SEASONS, DEFAULT_POS } from './conditions.js';
+import { LURE_TYPES, categoryOf, isFlySession } from './lure-types.js';
 
 export const MIN_SESSIONS = 5; // minder sessies = te weinig data voor een conclusie
 const COMBO_MIN_SESSIONS = 3;
@@ -43,7 +44,7 @@ function moonGroup(c) {
  * Factoren. `kind`:
  *  - 'session': één waarde per sessie
  *  - 'slice':   per tijdsblok (dagdeel), vangsten op hun eigen tijdstip
- *  - 'segment': per periode met hetzelfde aas of dezelfde methode (wissels tellen mee)
+ *  - 'segment': per periode met hetzelfde aas (wissels tellen mee)
  */
 export const FACTORS = [
   { key: 'dayPart', label: 'Dagdeel', kind: 'slice', order: DAY_PARTS },
@@ -57,22 +58,22 @@ export const FACTORS = [
   { key: 'water', label: 'Waterhelderheid', kind: 'session', order: ['Helder', 'Licht troebel', 'Troebel'], get: (s) => s.waterClarity },
   { key: 'platform', label: 'Vanaf', kind: 'session', order: ['Kant', 'Wadend', 'Boot'], get: (s) => s.platform },
   { key: 'spot', label: 'Stek', kind: 'session', get: (s) => s.spot?.name },
-  { key: 'method', label: 'Methode', kind: 'segment', field: 'method' },
+  { key: 'category', label: 'Aascategorie', kind: 'segment', field: 'category', order: LURE_TYPES },
   { key: 'lure', label: 'Kunstaas', kind: 'segment', field: 'lure' },
 ];
 
 const lureLabel = (l) => (l ? [l.name || l.type, l.color].filter(Boolean).join(' · ') : null);
 
-/** Periodes binnen een sessie met dezelfde methode en hetzelfde aas. */
+/** Periodes binnen een sessie met hetzelfde aas. */
 export function segments(s) {
   const start = Date.parse(s.startedAt);
   const end = Date.parse(s.endedAt);
-  const changes = (s.changes && s.changes.length ? s.changes : [{ at: s.startedAt, method: s.method, lureId: s.lureId, lure: s.lure }])
+  const changes = (s.changes && s.changes.length ? s.changes : [{ at: s.startedAt, lureId: s.lureId, lure: s.lure }])
     .map((c) => ({ ...c, t: Math.min(Math.max(Date.parse(c.at), start), end) }))
     .sort((a, b) => a.t - b.t);
   return changes
     .map((c, i) => ({
-      method: c.method,
+      category: categoryOf(c.lure),
       lure: lureLabel(c.lure),
       hours: Math.max(0, ((i + 1 < changes.length ? changes[i + 1].t : end) - c.t) / 3600e3),
     }))
@@ -101,7 +102,8 @@ function catchDayPart(s, f) {
 
 /** Sessies en vissen die meetellen voor een soort ('Alle' = alles). */
 export function scope(sessions, species) {
-  const done = sessions.filter((s) => s.endedAt && hoursOf(s) > 0);
+  // Vliegvissessies vallen buiten deze versie (FL-27) en tellen niet mee.
+  const done = sessions.filter((s) => s.endedAt && hoursOf(s) > 0 && !isFlySession(s));
   if (!species || species === 'Alle') return { sessions: done, fishOf: (s) => s.catches };
   return {
     sessions: done.filter((s) => (s.targetSpecies || []).includes(species) || s.catches.some((f) => f.species === species)),
@@ -143,12 +145,12 @@ export function factorTable(factor, sessions, fishOf) {
         r.sessions.add(s.id);
       }
       for (const f of fish) {
-        const v = factor.field === 'lure' ? lureLabel(f.lure) : f.method;
+        const v = factor.field === 'lure' ? lureLabel(f.lure) : categoryOf(f.lure);
         if (!v) continue;
         row(v).fish += 1;
       }
       for (const a of s.bites || []) {
-        const v = factor.field === 'lure' ? lureLabel(a.lure) : a.method;
+        const v = factor.field === 'lure' ? lureLabel(a.lure) : categoryOf(a.lure);
         if (v && rows.has(v)) row(v).bites += 1;
       }
     }
@@ -166,7 +168,7 @@ export function factorTable(factor, sessions, fishOf) {
 const COMBO_FACTORS = [
   { label: 'dagdeel', get: (s) => s.conditions?.dayPart },
   ...FACTORS.filter((f) => f.kind === 'session' && f.key !== 'windDir').map((f) => ({ label: f.label.toLowerCase(), get: f.get, key: f.key })),
-  { label: 'methode', get: (s) => s.method },
+  { label: 'aascategorie', get: (s) => categoryOf(s.changes && s.changes[0] ? s.changes[0].lure : s.lure) },
 ];
 
 function* combinations(arr, k, start = 0, prefix = []) {

@@ -1,5 +1,5 @@
 // Service worker: de app werkt ook zonder bereik aan het water.
-const VERSION = 'fl-r2-9';
+const VERSION = 'fl-r3-1';
 const APP_CACHE = `app-${VERSION}`;
 const TILE_CACHE = 'tiles-v1';
 const FONT_CACHE = 'fonts-v1';
@@ -18,6 +18,7 @@ const APP_FILES = [
   './js/data-export.js',
   './js/insights.js',
   './js/recognize.js',
+  './js/lure-types.js',
   './vendor/leaflet/leaflet.js',
   './vendor/leaflet/leaflet.css',
   './icons/icon-192.png',
