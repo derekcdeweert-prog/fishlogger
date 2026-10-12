@@ -322,6 +322,20 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; 
 .swipe-del .ico { width: 22px; height: 22px; }
 .swipe:not(.open):not(.dragging) .swipe-del { visibility: hidden; }
 
+.catch-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+.catch-actions .btn.huge { font-size: clamp(1.05rem, 5vw, 1.6rem); white-space: nowrap; padding: 0 12px; gap: 6px; }
+.catch-actions .btn.huge .ico { width: 24px; height: 24px; }
+.bite-btn {
+  min-height: 72px; border-radius: 18px; padding: 0 14px; flex-direction: column; gap: 2px;
+  border: 2px solid var(--accent); color: var(--ink); background: var(--surface); max-width: 112px;
+}
+.bite-label { font-size: .78rem; line-height: 1.15; text-align: center; font-weight: 600; }
+.bite-count { font-family: var(--font-display); font-weight: 700; font-size: 1.6rem; line-height: 1; color: var(--accent); font-variant-numeric: tabular-nums; }
+.stepper { display: flex; align-items: center; gap: 10px; }
+.stepper .btn { min-width: 44px; padding: 0; font-size: 1.3rem; }
+.stepper .btn:disabled { opacity: .4; }
+.stepper-val { min-width: 2ch; text-align: center; font-family: var(--font-display); font-weight: 700; font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+
 /* ---------- Inzichten ---------- */
 .bars { display: flex; flex-direction: column; gap: 14px; }
 .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; }

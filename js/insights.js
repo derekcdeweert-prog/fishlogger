@@ -113,7 +113,7 @@ export function scope(sessions, species) {
 export function factorTable(factor, sessions, fishOf) {
   const rows = new Map();
   const row = (v) => {
-    if (!rows.has(v)) rows.set(v, { value: v, hours: 0, fish: 0, sessions: new Set() });
+    if (!rows.has(v)) rows.set(v, { value: v, hours: 0, fish: 0, bites: 0, sessions: new Set() });
     return rows.get(v);
   };
   for (const s of sessions) {
@@ -124,6 +124,7 @@ export function factorTable(factor, sessions, fishOf) {
       const r = row(v);
       r.hours += hoursOf(s);
       r.fish += fish.length;
+      r.bites += (s.bites || []).length;
       r.sessions.add(s.id);
     } else if (factor.kind === 'slice') {
       for (const [v, h] of dayPartHours(s)) {
@@ -132,6 +133,7 @@ export function factorTable(factor, sessions, fishOf) {
         r.sessions.add(s.id);
       }
       for (const f of fish) row(catchDayPart(s, f)).fish += 1;
+      for (const a of s.bites || []) row(catchDayPart(s, a)).bites += 1;
     } else {
       for (const g of segments(s)) {
         const v = g[factor.field];
@@ -145,11 +147,15 @@ export function factorTable(factor, sessions, fishOf) {
         if (!v) continue;
         row(v).fish += 1;
       }
+      for (const a of s.bites || []) {
+        const v = factor.field === 'lure' ? lureLabel(a.lure) : a.method;
+        if (v && rows.has(v)) row(v).bites += 1;
+      }
     }
   }
   let list = [...rows.values()]
     .filter((r) => r.hours > 0)
-    .map((r) => ({ value: r.value, hours: r.hours, fish: r.fish, sessions: r.sessions.size, rate: r.fish / r.hours, lowData: r.sessions.size < MIN_SESSIONS }));
+    .map((r) => ({ value: r.value, hours: r.hours, fish: r.fish, bites: r.bites, sessions: r.sessions.size, rate: r.fish / r.hours, lowData: r.sessions.size < MIN_SESSIONS }));
   if (factor.order) list.sort((a, b) => factor.order.indexOf(a.value) - factor.order.indexOf(b.value));
   else list.sort((a, b) => b.rate - a.rate || b.sessions - a.sessions);
   return list;

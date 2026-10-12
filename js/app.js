@@ -193,7 +193,13 @@ function renderVissen() {
       <button class="btn ghost small" id="change-rig" type="button">Wissel</button>
     </section>
 
-    <button class="btn primary huge" id="add-catch" type="button">${icon('plus')} Vangst toevoegen</button>
+    <div class="catch-actions">
+      <button class="btn primary huge" id="add-catch" type="button">${icon('plus')} Vangst toevoegen</button>
+      <button class="btn bite-btn" id="add-bite" type="button">
+        <span class="bite-label">Aanbeet of misser</span>
+        <span class="bite-count" aria-label="${(s.bites || []).length} aanbeten zonder vangst">${(s.bites || []).length}</span>
+      </button>
+    </div>
 
     <section class="catches">
       ${s.catches.length ? `<h2 class="section-title">Vangsten</h2>` : ''}
@@ -203,10 +209,39 @@ function renderVissen() {
     <button class="btn ghost wide" id="stop-session" type="button">${icon('stop')} Sessie stoppen</button>`;
 
   $('#add-catch', root).addEventListener('click', () => openCatchSheet(s));
+  $('#add-bite', root).addEventListener('click', () => addBite(s));
   $('#stop-session', root).addEventListener('click', () => openStopSheet(s));
   $('#change-rig', root).addEventListener('click', () => openRigSheet(s));
   $$('[data-catch]', root).forEach((b) => b.addEventListener('click', () => openCatchSheet(s, s.catches.find((f) => f.id === b.dataset.catch))));
   fillPhotos(root);
+}
+
+// ----- Aanbeten en missers tellen (FL-9) -----
+
+/** Telt een aanbeet zonder vangst met één tik: tijd, aas en methode gaan mee, de plek volgt op de achtergrond. */
+async function addBite(s) {
+  const bite = { id: db.uid(), at: new Date().toISOString(), method: s.method, lureId: s.lureId, lure: s.lure, position: null };
+  s.bites = [...(s.bites || []), bite];
+  await saveSession(s);
+  if (navigator.vibrate) { try { navigator.vibrate(15); } catch (_) { /* geen trilling */ } }
+  render();
+  const n = s.bites.length;
+  toast(`Aanbeet geteld (${n})`, '', {
+    label: 'Ongedaan maken',
+    onClick: async () => {
+      s.bites = (s.bites || []).filter((b) => b.id !== bite.id);
+      await saveSession(s);
+      render();
+    },
+  });
+  getPosition({ timeout: 20000, maximumAge: 0 })
+    .then(async (p) => {
+      const saved = (s.bites || []).find((b) => b.id === bite.id);
+      if (!saved) return;
+      saved.position = { lat: p.lat, lng: p.lng, accuracy: p.accuracy };
+      await saveSession(s);
+    })
+    .catch(() => {});
 }
 
 function catchRow(f) {
@@ -555,7 +590,7 @@ function openStopSheet(s) {
   const start = new Date(s.startedAt);
   const defaultEnd = toLocalInput(new Date());
   const body = el(`<form class="form" novalidate>
-    <p class="summary-line"><strong>${s.catches.length} ${s.catches.length === 1 ? 'vis' : 'vissen'}</strong> in ${fmtDuration(sessionHours(s))}</p>
+    <p class="summary-line"><strong>${s.catches.length} ${s.catches.length === 1 ? 'vis' : 'vissen'}</strong>${(s.bites || []).length ? ` en ${s.bites.length} ${s.bites.length === 1 ? 'aanbeet' : 'aanbeten'} zonder vangst` : ''} in ${fmtDuration(sessionHours(s))}</p>
     ${s.catches.length === 0 ? `<p class="hint">Ook een sessie zonder vis telt mee. Juist die laten zien wanneer het minder goed gaat.</p>` : ''}
     <label class="field"><span class="label">Gestopt om</span><input id="stop-time" type="datetime-local" value="${defaultEnd}" min="${toLocalInput(start)}" max="${toLocalInput(new Date())}"></label>
     <p class="hint">Vergeten te stoppen? Pas de eindtijd hierboven aan.</p>
@@ -819,6 +854,14 @@ function openSessionDetail(id) {
         <div><dt>Aas</dt><dd>${esc(lureName(s.changes?.[0]?.lure ?? s.lure))}</dd></div>
       </dl>
       ${wissels.length ? `<h3 class="section-title">Gewisseld</h3><ul class="switch-list">${wissels.map((w) => `<li><b>${fmtTime(new Date(w.at))}</b> ${esc(w.method)} · ${esc(lureName(w.lure))}</li>`).join('')}</ul>` : ''}
+      <div class="section-row">
+        <h3 class="section-title">Missers</h3>
+        <div class="stepper" role="group" aria-label="Aanbeten zonder vangst">
+          <button class="btn small" type="button" id="bite-minus" aria-label="Eén minder" ${(s.bites || []).length ? '' : 'disabled'}>−</button>
+          <span class="stepper-val">${(s.bites || []).length}</span>
+          <button class="btn small" type="button" id="bite-plus" aria-label="Eén meer">+</button>
+        </div>
+      </div>
       <div class="section-row"><h3 class="section-title">Vangsten</h3><button class="btn small" type="button" id="detail-add-catch">${icon('plus')} Vangst</button></div>
       ${s.catches.length ? `<div class="catches">${s.catches.map(catchRow).join('')}</div>` : `<p class="muted">Geen vangst in deze sessie.</p>`}
       ${s.notes ? `<h3 class="section-title">Notitie</h3><p class="note">${esc(s.notes)}</p>` : ''}
@@ -830,6 +873,22 @@ function openSessionDetail(id) {
     fillPhotos(sheet.body);
     $$('[data-catch]', sheet.body).forEach((b) => b.addEventListener('click', () => openCatchSheet(s, s.catches.find((f) => f.id === b.dataset.catch), draw)));
     $('#detail-add-catch', sheet.body).addEventListener('click', () => openCatchSheet(s, null, draw));
+    $('#bite-minus', sheet.body).addEventListener('click', async () => {
+      if (!(s.bites || []).length) return;
+      s.bites = s.bites.slice(0, -1);
+      await saveSession(s);
+      draw();
+      render();
+    });
+    $('#bite-plus', sheet.body).addEventListener('click', async () => {
+      // Achteraf toegevoegd: midden in de sessie, met het aas van de start.
+      const mid = new Date((Date.parse(s.startedAt) + Date.parse(s.endedAt)) / 2).toISOString();
+      const first = (s.changes && s.changes[0]) || s;
+      s.bites = [...(s.bites || []), { id: db.uid(), at: mid, method: first.method, lureId: first.lureId, lure: first.lure, position: null, addedLater: true }];
+      await saveSession(s);
+      draw();
+      render();
+    });
     $('#edit-session', sheet.body).addEventListener('click', () => openSessionForm(s, draw));
     confirmButton($('#del-session', sheet.body), 'Tik nogmaals om te verwijderen', async () => {
       sheet.close();
@@ -932,12 +991,14 @@ function openSessionForm(existing = null, onSaved = null) {
       record.weather = { status: 'loading' };
     }
     // Vangsten buiten de nieuwe tijden blijven bewaard, maar worden binnen de sessie gezet.
-    record.catches = record.catches.map((f) => {
+    const clamp = (f) => {
       const t = Date.parse(f.at);
       if (t < newStart) return { ...f, at: record.startedAt };
       if (t > newEnd) return { ...f, at: record.endedAt };
       return f;
-    });
+    };
+    record.catches = record.catches.map(clamp);
+    record.bites = (record.bites || []).map(clamp);
     await saveSession(record);
     sheet.close();
     render();
@@ -982,7 +1043,7 @@ function renderInzichten() {
           <span class="bar-label">${esc(r.value)}</span>
           <span class="bar-val">${perHour(r.rate)}<small>/u</small></span>
           <span class="bar-track" aria-hidden="true"><span class="bar" style="width:${Math.max(r.rate > 0 ? 2 : 0, (r.rate / max) * 100).toFixed(1)}%"></span><span class="avg-mark" style="left:${avgPos.toFixed(1)}%"></span></span>
-          <span class="bar-meta">${r.sessions} ${r.sessions === 1 ? 'sessie' : 'sessies'} · ${fmtNum(r.hours, r.hours < 10 ? 1 : 0)} u · ${r.fish} ${r.fish === 1 ? 'vis' : 'vissen'}${r.lowData ? ' · <b>te weinig data</b>' : ''}</span>
+          <span class="bar-meta">${r.sessions} ${r.sessions === 1 ? 'sessie' : 'sessies'} · ${fmtNum(r.hours, r.hours < 10 ? 1 : 0)} u · ${r.fish} ${r.fish === 1 ? 'vis' : 'vissen'}${r.bites ? ` · ${r.bites} ${r.bites === 1 ? 'aanbeet' : 'aanbeten'}` : ''}${r.lowData ? ' · <b>te weinig data</b>' : ''}</span>
         </div>`).join('')}
       </div>
     </section>`;

@@ -27,7 +27,7 @@ const HEADER = [
   'sessie_id', 'datum', 'start', 'eind', 'duur_uur', 'stek', 'breedtegraad', 'lengtegraad', 'visplek',
   'doelsoorten', 'methode_start', 'aas_start', 'waterhelderheid', 'dagdeel', 'seizoen', 'maand', 'maanfase',
   'temperatuur_c', 'wind_kmu', 'wind_bft', 'windrichting', 'bewolking_pct', 'neerslag_mm', 'luchtdruk_hpa',
-  'drukverloop', 'drukverschil_3u_hpa', 'weer', 'vissen_in_sessie', 'vangst_per_uur',
+  'drukverloop', 'drukverschil_3u_hpa', 'weer', 'vissen_in_sessie', 'aanbeten_zonder_vangst', 'vangst_per_uur',
   'vangst_tijd', 'soort', 'lengte_cm', 'vangst_aas', 'vangst_methode', 'vangst_notitie', 'vangst_breedtegraad', 'vangst_lengtegraad', 'sessie_notitie',
 ];
 
@@ -50,7 +50,7 @@ export function buildCsv(sessions) {
       c.dayPart, c.season, c.month, c.moonPhase,
       num(w.tempC), num(w.windKmh, 0), w.windBft ?? '', w.windDir, w.cloudPct ?? '', num(w.precipMm),
       num(w.pressureHpa), w.pressureTrend, num(w.pressureDelta3h), w.desc,
-      s.catches.length, num(catchRate(s), 2),
+      s.catches.length, (s.bites || []).length, num(catchRate(s), 2),
     ];
     if (s.catches.length === 0) {
       rows.push([...base, '', '', '', '', '', '', '', '', s.notes]);
