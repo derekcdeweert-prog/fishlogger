@@ -259,7 +259,7 @@ function catchRow(f) {
     ${f.photoId ? `<img data-photo="${esc(f.photoId)}" alt="" class="thumb">` : `<span class="thumb empty">${icon('fish')}</span>`}
     <span class="catch-main">
       <strong>${esc(f.species)}${f.lengthCm ? ` · ${fmtNum(f.lengthCm, f.lengthCm % 1 ? 1 : 0)} cm` : ''}</strong>
-      <span class="muted">${fmtTime(new Date(f.at))} · ${esc(lureName(f.lure))}${f.position ? ` <span class="has-place" title="Plek vastgelegd">${icon('pin')}</span>` : ''}</span>
+      <span class="muted">${fmtTime(new Date(f.at))} · ${esc(lureShort(f.lure))}${f.position ? ` <span class="has-place" title="Plek vastgelegd">${icon('pin')}</span>` : ''}</span>
     </span>
   </button>`;
 }
@@ -938,14 +938,21 @@ function openRestoreSheet(file) {
 /** Al het aas dat in een sessie is gebruikt, in volgorde van eerste gebruik. */
 function usedInSession(s) {
   const lures = [];
-  const addL = (l) => { const n = l ? l.name || l.type : ''; if (n && !lures.includes(n)) lures.push(n); };
+  const addL = (l) => { const n = l ? lureShort(l) : ''; if (n && !lures.includes(n)) lures.push(n); };
   const picks = s.changes && s.changes.length ? s.changes : [{ lure: s.lure }];
   for (const c of picks) addL(c.lure);
   for (const f of s.catches) addL(f.lure);
   return { lures };
 }
 
-function lureShort(l) { return l ? l.name || l.type : 'geen aas'; }
+/** Naam of model met de categorie erbij, bijv. "Westin Swim (Jerkbaits)", zodat gelijke merken uit elkaar te houden zijn. */
+function lureShort(l) {
+  if (!l) return 'geen aas';
+  const cat = categoryOf(l);
+  const name = l.name || '';
+  if (name && cat) return `${name} (${cat})`;
+  return name || cat || l.type || 'aas';
+}
 
 function sessionMapItems(s) {
   const t = (x) => fmtTime(new Date(x.at));
