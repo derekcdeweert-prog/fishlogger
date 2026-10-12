@@ -1,5 +1,5 @@
 // Service worker: de app werkt ook zonder bereik aan het water.
-const VERSION = 'fl-r2-7';
+const VERSION = 'fl-r2-8';
 const APP_CACHE = `app-${VERSION}`;
 const TILE_CACHE = 'tiles-v1';
 const FONT_CACHE = 'fonts-v1';
@@ -88,7 +88,8 @@ self.addEventListener('fetch', (event) => {
   // App-bestanden: netwerk eerst (zodat updates direct binnenkomen), anders cache.
   if (url.origin === self.location.origin) {
     event.respondWith(
-      fetch(req)
+      // 'no-cache': altijd bij GitHub navragen of er een nieuwere versie is (geen 10 minuten oude kopie).
+      fetch(req, { cache: 'no-cache' })
         .then((res) => {
           if (res.ok) {
             const copy = res.clone();

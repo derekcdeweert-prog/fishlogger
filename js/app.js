@@ -1533,7 +1533,22 @@ async function boot() {
     if (e1) e1.textContent = fmtDuration(sessionHours(s));
     if (e2) e2.textContent = sRate(s);
   }, 30000);
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then((reg) => {
+      // Een app op het beginscherm wordt vaak hervat in plaats van opnieuw geopend: dan zelf op updates controleren.
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+    }).catch(() => {});
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading) return;
+      // Nieuwe versie actief: herladen, maar niet midden in het invullen van een formulier.
+      const reload = () => { if (reloading) return; reloading = true; location.reload(); };
+      if (!document.querySelector('.sheet-wrap')) reload();
+      else toast('Nieuwe versie klaar. Wordt geladen zodra je dit scherm sluit.');
+      const iv = setInterval(() => { if (!document.querySelector('.sheet-wrap')) { clearInterval(iv); reload(); } }, 1000);
+    });
+  }
 }
 
 boot();
