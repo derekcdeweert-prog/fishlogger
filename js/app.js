@@ -935,6 +935,71 @@ function openRestoreSheet(file) {
   });
 }
 
+// ----- Aastabel in de sessiesamenvatting (FL-28) -----
+
+const lureKey = (l, id) => id || (l ? `${l.type}|${l.name || ''}|${l.color || ''}` : 'none');
+
+/** Per aas: gebruikstijd (uit de wissels), vangsten, missers en totale lengte. */
+function lureStatsForSession(s) {
+  const rows = new Map();
+  const row = (lure, id) => {
+    const k = lureKey(lure, id);
+    if (!rows.has(k)) rows.set(k, { lure, hours: 0, fish: 0, bites: 0, cm: 0 });
+    return rows.get(k);
+  };
+  const start = Date.parse(s.startedAt);
+  const end = Date.parse(s.endedAt || new Date().toISOString());
+  const picks = (s.changes && s.changes.length ? s.changes : [{ at: s.startedAt, lureId: s.lureId, lure: s.lure }])
+    .map((c) => ({ ...c, t: Math.min(Math.max(Date.parse(c.at), start), end) }))
+    .sort((a, b) => a.t - b.t);
+  picks.forEach((c, i) => {
+    const until = i + 1 < picks.length ? picks[i + 1].t : end;
+    row(c.lure, c.lureId).hours += Math.max(0, until - c.t) / 3600e3;
+  });
+  for (const f of s.catches) {
+    const r = row(f.lure, f.lureId);
+    r.fish += 1;
+    r.cm += f.lengthCm || 0;
+  }
+  for (const b of s.bites || []) row(b.lure, b.lureId).bites += 1;
+  // Groeperen per categorie, in de vaste volgorde; binnen een groep het meest gebruikte aas eerst.
+  const groups = new Map();
+  for (const r of rows.values()) {
+    if (r.hours < 1 / 120 && !r.fish && !r.bites) continue; // korter dan een halve minuut en niets gebeurd
+    const g = r.lure ? categoryOf(r.lure) || 'Zonder categorie' : 'Zonder aas';
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(r);
+  }
+  const order = [...LURE_TYPES, 'Zonder categorie', 'Zonder aas'];
+  return [...groups.entries()]
+    .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
+    .map(([cat, list]) => [cat, list.sort((a, b) => b.hours - a.hours || b.fish - a.fish)]);
+}
+
+const hm = (h) => {
+  const m = Math.round(h * 60);
+  return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
+};
+
+function lureTableHtml(s) {
+  const groups = lureStatsForSession(s);
+  if (!groups.length) return '<p class="muted">Geen aas vastgelegd in deze sessie.</p>';
+  return `<div class="table-wrap"><table class="lure-table">
+    <thead><tr><th scope="col">Aas</th><th scope="col" class="num">Tijd</th><th scope="col" class="num">Vis</th><th scope="col" class="num">Mis</th><th scope="col" class="num">cm</th></tr></thead>
+    ${groups.map(([cat, list]) => `<tbody>
+      <tr class="cat-row"><th colspan="5" scope="rowgroup">${esc(cat)}</th></tr>
+      ${list.map((r) => `<tr>
+        <th scope="row"><span class="lt-name">${esc(r.lure ? r.lure.name || r.lure.type || 'Aas' : 'Geen aas')}</span>${r.lure && r.lure.color ? `<span class="lt-color">${esc(r.lure.color)}</span>` : ''}</th>
+        <td class="num">${r.hours >= 1 / 120 ? hm(r.hours) : '–'}</td>
+        <td class="num ${r.fish ? 'hit' : 'zero'}">${r.fish}</td>
+        <td class="num ${r.bites ? '' : 'zero'}">${r.bites}</td>
+        <td class="num ${r.cm ? '' : 'zero'}">${r.cm ? fmtNum(r.cm, r.cm % 1 ? 1 : 0) : '–'}</td>
+      </tr>`).join('')}
+    </tbody>`).join('')}
+  </table></div>
+  <p class="hint small">Tijd in uren:minuten. Vis = vangsten, Mis = aanbeten zonder vangst, cm = totale lengte van de gevangen vis.</p>`;
+}
+
 /** Al het aas dat in een sessie is gebruikt, in volgorde van eerste gebruik. */
 function usedInSession(s) {
   const lures = [];
@@ -981,7 +1046,6 @@ function openSessionDetail(id) {
     const c = s.conditions || {};
     $('.sheet-head h2', sheet.el).textContent = s.spot?.name || 'Sessie';
     const wissels = (s.changes || []).length > 1 ? s.changes.slice(1) : [];
-    const used = usedInSession(s);
     const mapItems = sessionMapItems(s);
     const nPlaced = mapItems.catches.length + mapItems.bites.length + mapItems.switches.length + (mapItems.start ? 1 : 0);
     const legend = [
@@ -1011,9 +1075,10 @@ function openSessionDetail(id) {
         <div><dt>Water</dt><dd>${esc(s.waterClarity)}</dd></div>
         <div><dt>Vanaf</dt><dd>${esc(s.platform)}</dd></div>
         <div><dt>Doelsoort</dt><dd>${esc((s.targetSpecies || []).join(', '))}</dd></div>
-        <div class="wide"><dt>Aas</dt><dd>${esc(used.lures.join(', ') || 'Geen aas')}</dd></div>
       </dl>
       ${wissels.length ? `<h3 class="section-title">Gewisseld</h3><ul class="switch-list">${wissels.map((w) => `<li><b>${fmtTime(new Date(w.at))}</b> ${esc(lureShort(w.lure))}</li>`).join('')}</ul>` : ''}
+      <h3 class="section-title">Aas</h3>
+      ${lureTableHtml(s)}
       <div class="section-row">
         <h3 class="section-title">Missers</h3>
         <div class="stepper" role="group" aria-label="Aanbeten zonder vangst">

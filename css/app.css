@@ -380,6 +380,20 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; 
 
 .warn-text { color: var(--warn); }
 
+/* Aastabel (FL-28) */
+.table-wrap { overflow-x: auto; margin-inline: calc(-1 * var(--gutter)); padding-inline: var(--gutter); }
+.lure-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: .92rem; }
+.lure-table th, .lure-table td { padding: 8px 6px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+.lure-table thead th { font-size: .72rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--ink); padding-top: 0; }
+.lure-table .num { text-align: right; white-space: nowrap; width: 1%; }
+.lure-table .cat-row th { padding: 14px 6px 4px; border-bottom: 0; font-family: var(--font-display); font-weight: 700; font-size: 1rem; letter-spacing: .03em; color: var(--water); text-transform: uppercase; }
+.lure-table tbody tr:last-child th, .lure-table tbody tr:last-child td { border-bottom: 0; }
+.lure-table tbody + tbody .cat-row th { border-top: 1px solid var(--line); }
+.lt-name { display: block; font-weight: 600; overflow-wrap: anywhere; }
+.lt-color { display: block; font-size: .8rem; color: var(--muted); font-weight: 400; }
+.lure-table td.hit { color: var(--accent); font-weight: 700; }
+.lure-table td.zero { color: var(--muted); }
+
 /* ---------- Inzichten ---------- */
 .bars { display: flex; flex-direction: column; gap: 14px; }
 .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; }
