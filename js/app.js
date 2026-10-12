@@ -293,6 +293,100 @@ function installHint() {
 
 // ----- Sessie starten -----
 
+// ----- Kunstaas kiezen met foto-carousels (FL-24) -----
+
+/** Hoe vaak elk aas is gekozen: bij de start van een sessie en bij elke wissel. */
+function lureUsage() {
+  const count = new Map();
+  for (const s of state.sessions) {
+    const picks = s.changes && s.changes.length ? s.changes : [{ lureId: s.lureId }];
+    for (const c of picks) if (c.lureId) count.set(c.lureId, (count.get(c.lureId) || 0) + 1);
+  }
+  return count;
+}
+
+/**
+ * Twee carousels: eerst het type, dan het aas zelf (met foto). Meest gekozen eerst.
+ * Geeft { value } terug met het gekozen lure-id (of null voor "geen aas").
+ */
+function mountLurePicker(container, selectedId) {
+  const usage = lureUsage();
+  const lures = state.lures.filter((l) => !l.archived || l.id === selectedId);
+  const picker = { value: selectedId && lureById(selectedId) ? selectedId : null };
+  if (!lures.length) {
+    container.innerHTML = `<p class="muted">Je tackle box is nog leeg. Voeg kunstaas toe via het tabblad Tackle box; dan kies je het hier met een tik op de foto.</p>`;
+    return picker;
+  }
+  const typeUse = new Map();
+  for (const l of lures) typeUse.set(l.type, (typeUse.get(l.type) || 0) + (usage.get(l.id) || 0));
+  const types = [...typeUse.keys()].sort((a, b) => typeUse.get(b) - typeUse.get(a) || LURE_TYPES.indexOf(a) - LURE_TYPES.indexOf(b));
+  const firstOfType = (t) => lures.find((l) => l.type === t && l.photoId) || lures.find((l) => l.type === t);
+  let type = picker.value ? lureById(picker.value).type : types[0];
+
+  const sizeText = (l) => (l.sizeCm ? `${fmtNum(l.sizeCm, l.sizeCm % 1 ? 1 : 0)} cm` : '');
+  const draw = (scrollToSelected) => {
+    const inType = lures
+      .filter((l) => l.type === type)
+      .sort((a, b) => (usage.get(b.id) || 0) - (usage.get(a.id) || 0) || (a.name || '').localeCompare(b.name || '', 'nl'));
+    container.innerHTML = `
+      <div class="carousel type-carousel" role="radiogroup" aria-label="Type kunstaas">
+        ${types.map((t) => {
+          const l = firstOfType(t);
+          return `<button type="button" class="type-card ${t === type ? 'on' : ''}" data-type="${esc(t)}" role="radio" aria-checked="${t === type}">
+            ${l && l.photoId ? `<img data-photo="${esc(l.photoId)}" alt="">` : `<span class="type-ini" aria-hidden="true">${esc(t.slice(0, 1))}</span>`}
+            <span>${esc(t)}</span>
+          </button>`;
+        }).join('')}
+        <button type="button" class="type-card none ${picker.value === null && type === null ? 'on' : ''}" data-type="" role="radio" aria-checked="${type === null}">
+          <span class="type-ini" aria-hidden="true">–</span><span>Geen aas</span>
+        </button>
+      </div>
+      ${type === null ? `<p class="muted picker-note">Je start zonder aas. Kies later via Wissel.</p>` : `
+      <div class="carousel lure-carousel" role="radiogroup" aria-label="${esc(type)}">
+        ${inType.map((l) => `<button type="button" class="lure-card ${l.id === picker.value ? 'on' : ''}" data-pick="${esc(l.id)}" role="radio" aria-checked="${l.id === picker.value}">
+          ${l.photoId ? `<img data-photo="${esc(l.photoId)}" alt="">` : `<span class="lure-ph" aria-hidden="true">${esc((l.color || l.name || '?').slice(0, 1).toUpperCase())}</span>`}
+          <span class="lure-card-name">${esc(l.name || l.type)}</span>
+          <span class="lure-card-sub">${esc([l.color, sizeText(l)].filter(Boolean).join(' · '))}</span>
+        </button>`).join('')}
+      </div>
+      <p class="picker-note ${picker.value ? '' : 'muted'}">${picker.value ? `Gekozen: <b>${esc(lureName(lureById(picker.value)))}</b>` : 'Tik op het aas dat aan je lijn hangt.'}</p>`}`;
+    fillPhotos(container);
+    if (scrollToSelected) {
+      const on = $('.lure-card.on', container);
+      if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest', inline: 'center' });
+    }
+  };
+  container.addEventListener('click', (e) => {
+    const t = e.target.closest('[data-type]');
+    if (t) {
+      const nt = t.dataset.type || null;
+      if (nt === type) return;
+      type = nt;
+      if (type === null) picker.value = null;
+      else {
+        // Nieuw type: kies meteen het meest gebruikte aas van dat type.
+        const top = lures
+          .filter((l) => l.type === type)
+          .sort((a, b) => (usage.get(b.id) || 0) - (usage.get(a.id) || 0) || (a.name || '').localeCompare(b.name || '', 'nl'))[0];
+        picker.value = top ? top.id : null;
+      }
+      draw(false);
+      return;
+    }
+    const c = e.target.closest('[data-pick]');
+    if (c) {
+      picker.value = c.dataset.pick;
+      draw(false);
+    }
+  });
+  if (!picker.value && type) {
+    const top = lures.filter((l) => l.type === type).sort((a, b) => (usage.get(b.id) || 0) - (usage.get(a.id) || 0))[0];
+    picker.value = top ? top.id : null;
+  }
+  draw(true);
+  return picker;
+}
+
 function lureOptions(selectedId) {
   const active = state.lures.filter((l) => !l.archived || l.id === selectedId);
   const groups = LURE_TYPES.map((t) => [t, active.filter((l) => l.type === t)]).filter(([, ls]) => ls.length);
@@ -313,13 +407,14 @@ function openStartSheet() {
     </div>
     <div class="field"><span class="label">Doelsoort(en)</span>${chips('species', SPECIES, last.targetSpecies || ['Snoek'], { multi: true })}</div>
     <div class="field"><span class="label">Methode</span>${chips('method', state.methods, state.methods.includes(last.method) ? last.method : state.methods[0])}</div>
-    <label class="field"><span class="label">Kunstaas</span><select id="start-lure">${lureOptions(last.lureId)}</select></label>
+    <div class="field"><span class="label">Kunstaas</span><div id="start-lure"></div></div>
     <div class="field"><span class="label">Waterhelderheid</span>${chips('water', WATER, last.waterClarity || 'Licht troebel')}</div>
     <div class="field"><span class="label">Je vist vanaf</span>${chips('platform', PLATFORMS, 'Kant')}</div>
     <button type="submit" class="btn primary huge">Start</button>
   </form>`);
   wireChips(body);
   const sheet = openSheet({ title: 'Nieuwe sessie', body });
+  const lurePicker = mountLurePicker($('#start-lure', body), last.lureId);
 
   let gps = null;
   let selectedSpot = null;
@@ -370,7 +465,7 @@ function openStartSheet() {
     if (!targetSpecies.length) { toast('Kies minstens één doelsoort.', 'warn'); return; }
     const spot = spotById(selectedSpot);
     const method = chipValue(body, 'method');
-    const lureId = $('#start-lure', body).value || null;
+    const lureId = lurePicker.value || null;
     const lure = lureById(lureId);
     const waterClarity = chipValue(body, 'water');
     const platform = chipValue(body, 'platform');
@@ -409,15 +504,16 @@ function openStartSheet() {
 function openRigSheet(s) {
   const body = el(`<form class="form" novalidate>
     <div class="field"><span class="label">Methode</span>${chips('method', allMethods(s.method), s.method)}</div>
-    <label class="field"><span class="label">Kunstaas</span><select id="rig-lure">${lureOptions(s.lureId)}</select></label>
+    <div class="field"><span class="label">Kunstaas</span><div id="rig-lure"></div></div>
     <button type="submit" class="btn primary wide">Opslaan</button>
   </form>`);
   wireChips(body);
   const sheet = openSheet({ title: 'Wissel aas of methode', body });
+  const lurePicker = mountLurePicker($('#rig-lure', body), s.lureId);
   body.addEventListener('submit', async (e) => {
     e.preventDefault();
     s.method = chipValue(body, 'method');
-    s.lureId = $('#rig-lure', body).value || null;
+    s.lureId = lurePicker.value || null;
     s.lure = lureSnap(lureById(s.lureId));
     s.changes = [...(s.changes || []), { at: new Date().toISOString(), method: s.method, lureId: s.lureId, lure: s.lure }];
     state.last = { ...state.last, method: s.method, lureId: s.lureId };
