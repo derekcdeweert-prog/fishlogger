@@ -362,6 +362,22 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; 
 .picker-note { font-size: .9rem; }
 .picker-note b { font-weight: 600; }
 
+/* Sessiekaart (FL-25) */
+.session-map-wrap { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.session-map { height: 240px; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); background: var(--line); }
+.map-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: .82rem; color: var(--muted); align-items: center; }
+.lg { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-weight: 500; }
+.lg i { display: inline-block; flex: none; }
+.lg-pin { width: 10px; height: 14px; background: var(--water); border-radius: 50% 50% 50% 0; transform: rotate(-45deg) scale(.85); }
+.lg-catch { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); }
+.lg-bite { width: 12px; height: 12px; border-radius: 50%; border: 2.5px solid var(--accent); box-sizing: border-box; }
+.lg-switch { width: 10px; height: 10px; background: var(--water); transform: rotate(45deg); }
+.lg-hint { width: 100%; font-size: .75rem; }
+.leaflet-interactive.bite-dot { fill: #fff; fill-opacity: .9; stroke: var(--accent); stroke-width: 3; }
+.switch-mark svg { width: 18px; height: 18px; overflow: visible; filter: drop-shadow(0 1px 1px rgb(0 0 0 / .35)); }
+.switch-mark path { fill: var(--water); stroke: #fff; stroke-width: 2; }
+.facts .wide { grid-column: 1 / -1; }
+
 /* ---------- Inzichten ---------- */
 .bars { display: flex; flex-direction: column; gap: 14px; }
 .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; }

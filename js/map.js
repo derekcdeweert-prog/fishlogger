@@ -423,3 +423,49 @@ export function openPointPicker({ title, start = null, fallback = null, hint = '
   setTimeout(() => map.invalidateSize(), 250);
   return sheet;
 }
+
+// ---------- Kaart van één sessie (FL-25) ----------
+
+function diamondIcon() {
+  return L.divIcon({
+    className: 'switch-mark',
+    html: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 1.5L18.5 10 10 18.5 1.5 10z"/></svg>',
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+    popupAnchor: [0, -8],
+  });
+}
+
+/**
+ * Kleine kaart met startplek, vangsten, missers en wissels.
+ * `items` = { start, catches: [{lat,lng,label}], bites: [...], switches: [...] }.
+ * Slepen staat uit zodat je de pagina gewoon kunt scrollen; knijpen en dubbeltikken zoomen wel.
+ * Geeft de Leaflet-kaart terug (of null zonder plekken).
+ */
+export function createSessionMap(container, items) {
+  const pts = [
+    ...(items.start ? [items.start] : []),
+    ...items.catches,
+    ...items.bites,
+    ...items.switches,
+  ];
+  if (!pts.length) return null;
+  const map = L.map(container, { zoomControl: false, dragging: false, scrollWheelZoom: false, tap: true, attributionControl: true });
+  map.attributionControl.setPrefix(false);
+  LAYERS[savedLayer()]().addTo(map);
+  const pop = (txt) => `<div class="pop"><strong>${esc(txt.title)}</strong>${txt.sub ? `<div class="pop-stats"><span>${esc(txt.sub)}</span></div>` : ''}</div>`;
+  if (items.start) L.marker([items.start.lat, items.start.lng], { icon: pinIcon(''), title: 'Start' }).bindPopup(pop(items.start), { closeButton: false }).addTo(map);
+  for (const s of items.switches) L.marker([s.lat, s.lng], { icon: diamondIcon() }).bindPopup(pop(s), { closeButton: false }).addTo(map);
+  for (const b of items.bites) L.circleMarker([b.lat, b.lng], { radius: 6, className: 'bite-dot' }).bindPopup(pop(b), { closeButton: false }).addTo(map);
+  for (const c of items.catches) L.circleMarker([c.lat, c.lng], { radius: 7, className: 'catch-dot' }).bindPopup(pop(c), { closeButton: false }).addTo(map);
+  const fit = () => {
+    map.invalidateSize();
+    if (pts.length === 1) map.setView([pts[0].lat, pts[0].lng], 17);
+    else map.fitBounds(L.latLngBounds(pts.map((p) => [p.lat, p.lng])).pad(0.25), { maxZoom: 18 });
+  };
+  let alive = true;
+  map.on('unload', () => { alive = false; });
+  fit();
+  setTimeout(() => { if (alive) fit(); }, 260); // na het inschuiven van het paneel klopt de maat pas
+  return map;
+}

@@ -2,7 +2,7 @@
 import * as db from './db.js';
 import { computedConditions, fetchWeather, distanceM, DEFAULT_POS } from './conditions.js';
 import { buildCsv, buildBackup, restoreBackup, saveFile, stamp, sessionHours } from './data-export.js';
-import { MapScreen, openSpotEditor, openPointPicker, getPosition } from './map.js';
+import { MapScreen, openSpotEditor, openPointPicker, createSessionMap, getPosition } from './map.js';
 import { recognizeLure, getKey, setKey, clearKey, getMode, setMode } from './recognize.js';
 import { FACTORS, MIN_SESSIONS, scope, factorTable, bestCombinations, overall } from './insights.js';
 import {
@@ -515,12 +515,22 @@ function openRigSheet(s) {
     s.method = chipValue(body, 'method');
     s.lureId = lurePicker.value || null;
     s.lure = lureSnap(lureById(s.lureId));
-    s.changes = [...(s.changes || []), { at: new Date().toISOString(), method: s.method, lureId: s.lureId, lure: s.lure }];
+    const change = { id: db.uid(), at: new Date().toISOString(), method: s.method, lureId: s.lureId, lure: s.lure, position: null };
+    s.changes = [...(s.changes || []), change];
     state.last = { ...state.last, method: s.method, lureId: s.lureId };
     await db.setSetting('lastChoices', state.last);
     await saveSession(s);
     sheet.close();
     render();
+    // FL-25: plek van de wissel op de achtergrond vastleggen.
+    getPosition({ timeout: 20000, maximumAge: 0 })
+      .then(async (p) => {
+        const saved = (s.changes || []).find((x) => x.id === change.id);
+        if (!saved) return;
+        saved.position = { lat: p.lat, lng: p.lng, accuracy: p.accuracy };
+        await saveSession(s);
+      })
+      .catch(() => {});
   });
 }
 
@@ -919,9 +929,40 @@ function openRestoreSheet(file) {
   });
 }
 
+/** Alle methodes en al het aas dat in een sessie is gebruikt, in volgorde van eerste gebruik. */
+function usedInSession(s) {
+  const methods = [];
+  const lures = [];
+  const addM = (m) => { if (m && !methods.includes(m)) methods.push(m); };
+  const addL = (l) => { const n = l ? l.name || l.type : ''; if (n && !lures.includes(n)) lures.push(n); };
+  const picks = s.changes && s.changes.length ? s.changes : [{ method: s.method, lure: s.lure }];
+  for (const c of picks) { addM(c.method); addL(c.lure); }
+  for (const f of s.catches) { addM(f.method); addL(f.lure); }
+  return { methods, lures };
+}
+
+const lureShort = (l) => (l ? l.name || l.type : 'geen aas');
+
+function sessionMapItems(s) {
+  const t = (x) => fmtTime(new Date(x.at));
+  const start = s.position || (s.spot ? { lat: s.spot.lat, lng: s.spot.lng } : null);
+  return {
+    start: start ? { lat: start.lat, lng: start.lng, title: `Start · ${fmtTime(new Date(s.startedAt))}`, sub: s.spot?.name || '' } : null,
+    catches: s.catches.filter((f) => f.position).map((f) => ({
+      lat: f.position.lat, lng: f.position.lng,
+      title: `${f.species}${f.lengthCm ? ` · ${fmtNum(f.lengthCm, f.lengthCm % 1 ? 1 : 0)} cm` : ''}`,
+      sub: `${t(f)} · ${lureShort(f.lure)}`,
+    })),
+    bites: (s.bites || []).filter((b) => b.position).map((b) => ({ lat: b.position.lat, lng: b.position.lng, title: 'Misser', sub: `${t(b)} · ${lureShort(b.lure)}` })),
+    switches: (s.changes || []).slice(1).filter((c) => c.position).map((c) => ({ lat: c.position.lat, lng: c.position.lng, title: `Wissel · ${t(c)}`, sub: `${c.method} · ${lureShort(c.lure)}` })),
+  };
+}
+
 function openSessionDetail(id) {
-  const sheet = openSheet({ title: 'Sessie', body: '' });
+  let miniMap = null;
+  const sheet = openSheet({ title: 'Sessie', body: '', onClose: () => { if (miniMap) { miniMap.remove(); miniMap = null; } } });
   const draw = () => {
+    if (miniMap) { miniMap.remove(); miniMap = null; }
     const s = state.sessions.find((x) => x.id === id);
     if (!s) { sheet.close(); return; }
     const start = new Date(s.startedAt);
@@ -929,8 +970,21 @@ function openSessionDetail(id) {
     const c = s.conditions || {};
     $('.sheet-head h2', sheet.el).textContent = s.spot?.name || 'Sessie';
     const wissels = (s.changes || []).length > 1 ? s.changes.slice(1) : [];
+    const used = usedInSession(s);
+    const mapItems = sessionMapItems(s);
+    const nPlaced = mapItems.catches.length + mapItems.bites.length + mapItems.switches.length + (mapItems.start ? 1 : 0);
+    const legend = [
+      mapItems.start ? `<span class="lg"><i class="lg-pin"></i>Start</span>` : '',
+      mapItems.catches.length ? `<span class="lg"><i class="lg-catch"></i>${mapItems.catches.length} ${mapItems.catches.length === 1 ? 'vangst' : 'vangsten'}</span>` : '',
+      mapItems.bites.length ? `<span class="lg"><i class="lg-bite"></i>${mapItems.bites.length} ${mapItems.bites.length === 1 ? 'misser' : 'missers'}</span>` : '',
+      mapItems.switches.length ? `<span class="lg"><i class="lg-switch"></i>${mapItems.switches.length} ${mapItems.switches.length === 1 ? 'wissel' : 'wissels'}</span>` : '',
+    ].join('');
     sheet.body.innerHTML = `<div class="detail">
       <p class="muted">${fmtDate(start)} · ${fmtTime(start)}–${fmtTime(end)} · ${fmtDuration(sessionHours(s))}</p>
+      ${nPlaced ? `<figure class="session-map-wrap">
+        <div class="session-map" aria-label="Kaart van de sessie"></div>
+        <figcaption class="map-legend">${legend}<span class="lg-hint">Knijp om te zoomen · tik op een punt</span></figcaption>
+      </figure>` : ''}
       <section class="live-numbers small-nums">
         <div><span class="big">${s.catches.length}</span><span class="lbl">${s.catches.length === 1 ? 'vis' : 'vissen'}</span></div>
         <div><span class="big">${sRate(s, 2)}</span><span class="lbl">per uur</span></div>
@@ -946,10 +1000,10 @@ function openSessionDetail(id) {
         <div><dt>Water</dt><dd>${esc(s.waterClarity)}</dd></div>
         <div><dt>Vanaf</dt><dd>${esc(s.platform)}</dd></div>
         <div><dt>Doelsoort</dt><dd>${esc((s.targetSpecies || []).join(', '))}</dd></div>
-        <div><dt>Methode</dt><dd>${esc((s.changes?.[0]?.method) || s.method)}</dd></div>
-        <div><dt>Aas</dt><dd>${esc(lureName(s.changes?.[0]?.lure ?? s.lure))}</dd></div>
+        <div class="wide"><dt>${used.methods.length > 1 ? 'Methodes' : 'Methode'}</dt><dd>${esc(used.methods.join(', ') || '–')}</dd></div>
+        <div class="wide"><dt>Aas</dt><dd>${esc(used.lures.join(', ') || 'Geen aas')}</dd></div>
       </dl>
-      ${wissels.length ? `<h3 class="section-title">Gewisseld</h3><ul class="switch-list">${wissels.map((w) => `<li><b>${fmtTime(new Date(w.at))}</b> ${esc(w.method)} · ${esc(lureName(w.lure))}</li>`).join('')}</ul>` : ''}
+      ${wissels.length ? `<h3 class="section-title">Gewisseld</h3><ul class="switch-list">${wissels.map((w) => `<li><b>${fmtTime(new Date(w.at))}</b> ${esc(w.method)} · ${esc(lureShort(w.lure))}</li>`).join('')}</ul>` : ''}
       <div class="section-row">
         <h3 class="section-title">Missers</h3>
         <div class="stepper" role="group" aria-label="Aanbeten zonder vangst">
@@ -967,6 +1021,8 @@ function openSessionDetail(id) {
       </div>
     </div>`;
     fillPhotos(sheet.body);
+    const mapEl = $('.session-map', sheet.body);
+    if (mapEl) miniMap = createSessionMap(mapEl, mapItems);
     $$('[data-catch]', sheet.body).forEach((b) => b.addEventListener('click', () => openCatchSheet(s, s.catches.find((f) => f.id === b.dataset.catch), draw)));
     $('#detail-add-catch', sheet.body).addEventListener('click', () => openCatchSheet(s, null, draw));
     $('#bite-minus', sheet.body).addEventListener('click', async () => {
