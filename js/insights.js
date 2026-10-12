@@ -1,12 +1,13 @@
 // Inzichten: vangst per uur per factor en de beste combinaties.
 import { dayPart, DAY_PARTS, SEASONS, DEFAULT_POS } from './conditions.js';
 import { LURE_TYPES, categoryOf, isFlySession } from './lure-types.js';
+import { activeHours } from './session-time.js';
 
 export const MIN_SESSIONS = 5; // minder sessies = te weinig data voor een conclusie
 const COMBO_MIN_SESSIONS = 3;
 const SLICE_MIN = 10; // dagdeel wordt per 10 minuten bepaald
 
-const hoursOf = (s) => Math.max(0, (Date.parse(s.endedAt) - Date.parse(s.startedAt)) / 3600e3);
+const hoursOf = (s) => activeHours(s); // zonder pauzes (FL-29)
 
 // ---------- Indelingen ----------
 
@@ -75,7 +76,7 @@ export function segments(s) {
     .map((c, i) => ({
       category: categoryOf(c.lure),
       lure: lureLabel(c.lure),
-      hours: Math.max(0, ((i + 1 < changes.length ? changes[i + 1].t : end) - c.t) / 3600e3),
+      hours: activeHours(s, c.t, i + 1 < changes.length ? changes[i + 1].t : end),
     }))
     .filter((g) => g.hours > 0);
 }
@@ -87,9 +88,10 @@ function dayPartHours(s) {
   const end = Date.parse(s.endedAt);
   const out = new Map();
   for (let t = start; t < end; t += SLICE_MIN * 60e3) {
-    const len = Math.min(SLICE_MIN * 60e3, end - t) / 3600e3;
-    const mid = new Date(t + (len * 3600e3) / 2);
-    const part = dayPart(mid, pos.lat, pos.lng);
+    const sliceEnd = Math.min(t + SLICE_MIN * 60e3, end);
+    const len = activeHours(s, t, sliceEnd);
+    if (len <= 0) continue;
+    const part = dayPart(new Date((t + sliceEnd) / 2), pos.lat, pos.lng);
     out.set(part, (out.get(part) || 0) + len);
   }
   return out;

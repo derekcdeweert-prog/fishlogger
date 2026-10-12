@@ -394,6 +394,12 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; 
 .lure-table td.hit { color: var(--accent); font-weight: 700; }
 .lure-table td.zero { color: var(--muted); }
 
+/* Pauze (FL-29) */
+.session-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 10px; }
+.pause-card { border: 2px dashed var(--water); background: var(--surface); align-items: stretch; }
+.pause-time { font-size: 1.05rem; }
+.pause-time span { font-family: var(--font-display); font-weight: 700; font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+
 /* ---------- Inzichten ---------- */
 .bars { display: flex; flex-direction: column; gap: 14px; }
 .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; }

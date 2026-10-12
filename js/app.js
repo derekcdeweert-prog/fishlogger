@@ -12,6 +12,7 @@ import {
 
 export const SPECIES = ['Snoek', 'Snoekbaars', 'Baars', 'Forel', 'Kopvoorn', 'Ruisvoorn', 'Winde', 'Overig'];
 import { LURE_TYPES, LEGACY_TYPES, FLY_TYPE, categoryOf, isFlySession } from './lure-types.js';
+import { activeHours, pauseHours, isPaused, clampPauses } from './session-time.js';
 const WATER = ['Helder', 'Licht troebel', 'Troebel'];
 const PLATFORMS = ['Kant', 'Wadend', 'Boot'];
 
@@ -181,7 +182,7 @@ function renderVissen() {
   const c = s.conditions || {};
   root.innerHTML = `
     <header class="screen-head">
-      <p class="eyebrow">Sessie loopt · sinds ${fmtTime(new Date(s.startedAt))}</p>
+      <p class="eyebrow">${isPaused(s) ? 'Gepauzeerd' : 'Sessie loopt'} · gestart ${fmtTime(new Date(s.startedAt))}</p>
       <h1>${esc(s.spot?.name || 'Onbekende stek')}</h1>
     </header>
     <section class="live card">
@@ -203,7 +204,12 @@ function renderVissen() {
       <button class="btn ghost small" id="change-rig" type="button">Wissel</button>
     </section>
 
-    <div class="catch-actions">
+    ${isPaused(s) ? `<section class="card pause-card" aria-live="polite">
+      <p class="eyebrow">Pauze sinds ${fmtTime(new Date(s.pauses.find((p) => !p.end).start))}</p>
+      <p class="pause-time"><span id="pause-elapsed">${fmtDuration(pauseOpenHours(s))}</span> pauze · de klok staat stil</p>
+      <button class="btn primary huge" id="resume" type="button">${icon('fish')} Verder vissen</button>
+    </section>` : ''}
+    <div class="catch-actions" ${isPaused(s) ? 'hidden' : ''}>
       <button class="btn primary huge" id="add-catch" type="button">${icon('plus')} Vangst toevoegen</button>
       <button class="btn bite-btn" id="add-bite" type="button">
         <span class="bite-label">Aanbeet of misser</span>
@@ -216,14 +222,44 @@ function renderVissen() {
       ${[...s.catches].reverse().map(catchRow).join('')}
     </section>
 
-    <button class="btn ghost wide" id="stop-session" type="button">${icon('stop')} Sessie stoppen</button>`;
+    <div class="session-actions">
+      ${isPaused(s) ? '' : `<button class="btn ghost" id="pause-session" type="button">${icon('pause')} Pauze</button>`}
+      <button class="btn ghost" id="stop-session" type="button">${icon('stop')} Sessie stoppen</button>
+    </div>
+    ${pauseHours(s) > 0 && !isPaused(s) ? `<p class="hint center">${fmtDuration(pauseHours(s))} pauze telt niet mee als vistijd.</p>` : ''}`;
 
   $('#add-catch', root).addEventListener('click', () => openCatchSheet(s));
   $('#add-bite', root).addEventListener('click', () => addBite(s));
   $('#stop-session', root).addEventListener('click', () => openStopSheet(s));
+  $('#pause-session', root)?.addEventListener('click', () => pauseSession(s));
+  $('#resume', root)?.addEventListener('click', () => resumeSession(s));
   $('#change-rig', root).addEventListener('click', () => openRigSheet(s));
   $$('[data-catch]', root).forEach((b) => b.addEventListener('click', () => openCatchSheet(s, s.catches.find((f) => f.id === b.dataset.catch))));
   fillPhotos(root);
+}
+
+// ----- Pauzeren (FL-29) -----
+
+const pauseOpenHours = (s) => {
+  const p = (s.pauses || []).find((x) => !x.end);
+  return p ? Math.max(0, Date.now() - Date.parse(p.start)) / 3600e3 : 0;
+};
+
+async function pauseSession(s) {
+  if (isPaused(s)) return;
+  s.pauses = [...(s.pauses || []), { start: new Date().toISOString(), end: null }];
+  await saveSession(s);
+  render();
+  toast('Pauze. De klok staat stil.');
+}
+
+async function resumeSession(s) {
+  const p = (s.pauses || []).find((x) => !x.end);
+  if (!p) return;
+  p.end = new Date().toISOString();
+  await saveSession(s);
+  render();
+  toast(`Verder na ${fmtDuration((Date.parse(p.end) - Date.parse(p.start)) / 3600e3)} pauze`);
 }
 
 // ----- Aanbeten en missers tellen (FL-9) -----
@@ -702,7 +738,7 @@ function openStopSheet(s) {
   const start = new Date(s.startedAt);
   const defaultEnd = toLocalInput(new Date());
   const body = el(`<form class="form" novalidate>
-    <p class="summary-line"><strong>${s.catches.length} ${s.catches.length === 1 ? 'vis' : 'vissen'}</strong>${(s.bites || []).length ? ` en ${s.bites.length} ${s.bites.length === 1 ? 'aanbeet' : 'aanbeten'} zonder vangst` : ''} in ${fmtDuration(sessionHours(s))}</p>
+    <p class="summary-line"><strong>${s.catches.length} ${s.catches.length === 1 ? 'vis' : 'vissen'}</strong>${(s.bites || []).length ? ` en ${s.bites.length} ${s.bites.length === 1 ? 'aanbeet' : 'aanbeten'} zonder vangst` : ''} in ${fmtDuration(sessionHours(s))}${pauseHours(s) > 0 ? ` (plus ${fmtDuration(pauseHours(s))} pauze)` : ''}</p>
     ${s.catches.length === 0 ? `<p class="hint">Ook een sessie zonder vis telt mee. Juist die laten zien wanneer het minder goed gaat.</p>` : ''}
     <label class="field"><span class="label">Gestopt om</span><input id="stop-time" type="datetime-local" value="${defaultEnd}" min="${toLocalInput(start)}" max="${toLocalInput(new Date())}"></label>
     <p class="hint">Vergeten te stoppen? Pas de eindtijd hierboven aan.</p>
@@ -718,6 +754,7 @@ function openStopSheet(s) {
     if (Number.isNaN(end.getTime()) || end <= start) { toast('De eindtijd moet na de starttijd liggen.', 'warn'); return; }
     if (end > new Date(Date.now() + 60e3)) { toast('De eindtijd kan niet in de toekomst liggen.', 'warn'); return; }
     s.endedAt = end.toISOString();
+    clampPauses(s); // een lopende pauze eindigt bij het stoppen
     s.notes = $('#stop-notes', body).value.trim();
     await saveSession(s);
     sheet.close();
@@ -954,7 +991,7 @@ function lureStatsForSession(s) {
     .sort((a, b) => a.t - b.t);
   picks.forEach((c, i) => {
     const until = i + 1 < picks.length ? picks[i + 1].t : end;
-    row(c.lure, c.lureId).hours += Math.max(0, until - c.t) / 3600e3;
+    row(c.lure, c.lureId).hours += activeHours(s, c.t, until);
   });
   for (const f of s.catches) {
     const r = row(f.lure, f.lureId);
@@ -1055,7 +1092,7 @@ function openSessionDetail(id) {
       mapItems.switches.length ? `<span class="lg"><i class="lg-switch"></i>${mapItems.switches.length} ${mapItems.switches.length === 1 ? 'wissel' : 'wissels'}</span>` : '',
     ].join('');
     sheet.body.innerHTML = `<div class="detail">
-      <p class="muted">${fmtDate(start)} · ${fmtTime(start)}–${fmtTime(end)} · ${fmtDuration(sessionHours(s))}</p>
+      <p class="muted">${fmtDate(start)} · ${fmtTime(start)}–${fmtTime(end)} · ${fmtDuration(sessionHours(s))} gevist${pauseHours(s) > 0 ? ` · ${fmtDuration(pauseHours(s))} pauze` : ''}</p>
       ${nPlaced ? `<figure class="session-map-wrap">
         <div class="session-map" aria-label="Kaart van de sessie"></div>
         <figcaption class="map-legend">${legend}<span class="lg-hint">Knijp om te zoomen · tik op een punt</span></figcaption>
@@ -1222,6 +1259,7 @@ function openSessionForm(existing = null, onSaved = null) {
       return f;
     };
     record.catches = record.catches.map(clamp);
+    clampPauses(record);
     record.bites = (record.bites || []).map(clamp);
     await saveSession(record);
     sheet.close();
@@ -1590,6 +1628,8 @@ async function boot() {
     const e1 = $('#live-elapsed');
     const e2 = $('#live-rate');
     if (e1) e1.textContent = fmtDuration(sessionHours(s));
+    const ep = $('#pause-elapsed');
+    if (ep) ep.textContent = fmtDuration(pauseOpenHours(s));
     if (e2) e2.textContent = sRate(s);
   }, 30000);
   if ('serviceWorker' in navigator) {
