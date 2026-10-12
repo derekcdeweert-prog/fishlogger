@@ -442,7 +442,7 @@ function diamondIcon() {
  * Slepen staat uit zodat je de pagina gewoon kunt scrollen; knijpen en dubbeltikken zoomen wel.
  * Geeft de Leaflet-kaart terug (of null zonder plekken).
  */
-export function createSessionMap(container, items) {
+export function createSessionMap(container, items, { onCatch = null } = {}) {
   const pts = [
     ...(items.start ? [items.start] : []),
     ...items.catches,
@@ -457,7 +457,19 @@ export function createSessionMap(container, items) {
   if (items.start) L.marker([items.start.lat, items.start.lng], { icon: pinIcon(''), title: 'Start' }).bindPopup(pop(items.start), { closeButton: false }).addTo(map);
   for (const s of items.switches) L.marker([s.lat, s.lng], { icon: diamondIcon() }).bindPopup(pop(s), { closeButton: false }).addTo(map);
   for (const b of items.bites) L.circleMarker([b.lat, b.lng], { radius: 6, className: 'bite-dot' }).bindPopup(pop(b), { closeButton: false }).addTo(map);
-  for (const c of items.catches) L.circleMarker([c.lat, c.lng], { radius: 7, className: 'catch-dot' }).bindPopup(pop(c), { closeButton: false }).addTo(map);
+  // Een vangst-pop-up is aan te tikken: die opent het scherm Vangst bewerken.
+  const catchPop = (c) => onCatch
+    ? `<button type="button" class="pop pop-link" data-edit-catch="${esc(c.catchId)}"><strong>${esc(c.title)}</strong><span class="pop-stats"><span>${esc(c.sub)}</span></span><span class="pop-cta">Bewerk vangst ›</span></button>`
+    : pop(c);
+  for (const c of items.catches) L.circleMarker([c.lat, c.lng], { radius: 7, className: 'catch-dot' }).bindPopup(catchPop(c), { closeButton: false }).addTo(map);
+  if (onCatch) {
+    container.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-edit-catch]');
+      if (!b) return;
+      map.closePopup();
+      onCatch(b.dataset.editCatch);
+    });
+  }
   const fit = () => {
     map.invalidateSize();
     if (pts.length === 1) map.setView([pts[0].lat, pts[0].lng], 17);

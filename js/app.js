@@ -1062,6 +1062,7 @@ function sessionMapItems(s) {
   return {
     start: start ? { lat: start.lat, lng: start.lng, title: `Start · ${fmtTime(new Date(s.startedAt))}`, sub: s.spot?.name || '' } : null,
     catches: s.catches.filter((f) => f.position).map((f) => ({
+      catchId: f.id,
       lat: f.position.lat, lng: f.position.lng,
       title: `${f.species}${f.lengthCm ? ` · ${fmtNum(f.lengthCm, f.lengthCm % 1 ? 1 : 0)} cm` : ''}`,
       sub: `${t(f)} · ${lureShort(f.lure)}`,
@@ -1134,7 +1135,14 @@ function openSessionDetail(id) {
     </div>`;
     fillPhotos(sheet.body);
     const mapEl = $('.session-map', sheet.body);
-    if (mapEl) miniMap = createSessionMap(mapEl, mapItems);
+    if (mapEl) {
+      miniMap = createSessionMap(mapEl, mapItems, {
+        onCatch: (cid) => {
+          const f = s.catches.find((x) => x.id === cid);
+          if (f) openCatchSheet(s, f, draw);
+        },
+      });
+    }
     $$('[data-catch]', sheet.body).forEach((b) => b.addEventListener('click', () => openCatchSheet(s, s.catches.find((f) => f.id === b.dataset.catch), draw)));
     $('#detail-add-catch', sheet.body).addEventListener('click', () => openCatchSheet(s, null, draw));
     $('#bite-minus', sheet.body).addEventListener('click', async () => {

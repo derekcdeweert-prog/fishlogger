@@ -394,6 +394,9 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; 
 .lure-table td.hit { color: var(--accent); font-weight: 700; }
 .lure-table td.zero { color: var(--muted); }
 
+.pop-link { display: flex; flex-direction: column; gap: 6px; width: 100%; border: 0; background: none; padding: 0; text-align: left; color: inherit; font: inherit; cursor: pointer; }
+.pop-cta { color: var(--water); font-weight: 700; font-size: .85rem; }
+
 /* Pauze (FL-29) */
 .session-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 10px; }
 .pause-card { border: 2px dashed var(--water); background: var(--surface); align-items: stretch; }
