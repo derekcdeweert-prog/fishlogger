@@ -26,7 +26,7 @@ export function catchRate(s) {
 }
 
 const HEADER = [
-  'sessie_id', 'datum', 'start', 'eind', 'duur_uur', 'stek', 'breedtegraad', 'lengtegraad', 'visplek',
+  'sessie_id', 'visser', 'datum', 'start', 'eind', 'duur_uur', 'stek', 'breedtegraad', 'lengtegraad', 'visplek',
   'doelsoorten', 'aascategorie_start', 'aas_start', 'waterhelderheid', 'dagdeel', 'seizoen', 'maand', 'maanfase',
   'temperatuur_c', 'wind_kmu', 'wind_bft', 'windrichting', 'bewolking_pct', 'neerslag_mm', 'luchtdruk_hpa',
   'drukverloop', 'drukverschil_3u_hpa', 'weer', 'pauze_min', 'vissen_in_sessie', 'aanbeten_zonder_vangst', 'vangst_per_uur',
@@ -36,7 +36,7 @@ const HEADER = [
 const lureLabel = (l) => (l ? [l.name, l.color, l.sizeCm ? `${l.sizeCm} cm` : ''].filter(Boolean).join(' · ') : '');
 
 /** Eén rij per vangst; een sessie zonder vangst krijgt één rij met lege vangstkolommen. */
-export function buildCsv(sessions) {
+export function buildCsv(sessions, anglerLabel = () => 'Ik') {
   const rows = [HEADER];
   const sorted = [...sessions].filter((s) => s.endedAt).sort((a, b) => a.startedAt.localeCompare(b.startedAt));
   for (const s of sorted) {
@@ -46,7 +46,7 @@ export function buildCsv(sessions) {
     const c = s.conditions || {};
     const pos = s.position || {};
     const base = [
-      s.id, dateStr(start), timeStr(start), timeStr(end), num(sessionHours(s), 2),
+      s.id, anglerLabel(s), dateStr(start), timeStr(start), timeStr(end), num(sessionHours(s), 2),
       s.spot?.name, pos.lat != null ? pos.lat.toFixed(6).replace('.', ',') : '', pos.lng != null ? pos.lng.toFixed(6).replace('.', ',') : '',
       s.platform, (s.targetSpecies || []).join(', '), categoryOf(s.changes?.[0] ? s.changes[0].lure : s.lure) || '', lureLabel(s.changes?.[0] ? s.changes[0].lure : s.lure), s.waterClarity,
       c.dayPart, c.season, c.month, c.moonPhase,

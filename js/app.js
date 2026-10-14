@@ -23,9 +23,23 @@ const state = {
   sessions: [],
   last: {},
   photoUrls: new Map(),
+  anglers: [],
+  liveAngler: 'me',
+  tackleOwner: 'me',
 };
 
-const active = () => state.sessions.find((s) => !s.endedAt) || null;
+// ----- Vissers (FL-30) -----
+const ME = 'me';
+const anglerOf = (s) => s.angler || ME;
+const ownerOf = (l) => l.owner || ME;
+const anglerName = (id) => (id === ME ? 'Ik' : (state.anglers.find((a) => a.id === id) || {}).name || 'Vismaat');
+const anglerChoices = () => [{ value: ME, label: 'Ik' }, ...state.anglers.map((a) => ({ value: a.id, label: a.name }))];
+const actives = () => state.sessions.filter((s) => !s.endedAt);
+/** De lopende sessie die nu in beeld is (bij meerdere vissers de gekozen tab). */
+const active = () => {
+  const a = actives();
+  return a.find((s) => anglerOf(s) === state.liveAngler) || a.find((s) => anglerOf(s) === ME) || a[0] || null;
+};
 const spotById = (id) => state.spots.find((s) => s.id === id);
 const lureById = (id) => state.lures.find((l) => l.id === id);
 const lureSnap = (l) => (l ? { type: l.type, name: l.name, color: l.color, sizeCm: l.sizeCm, weightG: l.weightG } : null);
@@ -43,6 +57,11 @@ async function load() {
   state.sessions = sessions.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   await migrateLureTypes();
   state.last = await db.getSetting('lastChoices', {});
+  state.anglers = await db.getSetting('anglers', null);
+  if (!state.anglers) {
+    state.anglers = [{ id: 'leon', name: 'Leon' }];
+    await db.setSetting('anglers', state.anglers);
+  }
 }
 
 /**
@@ -180,9 +199,22 @@ function renderVissen() {
 
   const hours = sessionHours(s);
   const c = s.conditions || {};
+  const runs = actives();
+  const multi = runs.length > 1 || anglerOf(s) !== ME;
+  const tabs = state.anglers.length || runs.length > 1
+    ? `<nav class="angler-tabs" aria-label="Vissers">${anglerChoices().map((a) => {
+        const run = runs.find((r) => anglerOf(r) === a.value);
+        if (run) {
+          const on = run.id === s.id;
+          return `<button type="button" class="angler-tab ${on ? 'on' : ''}" data-live-angler="${esc(a.value)}" aria-pressed="${on}">${esc(a.label)}<span class="tab-count">${run.catches.length}</span>${isPaused(run) ? '<span class="tab-paused">pauze</span>' : ''}</button>`;
+        }
+        return `<button type="button" class="angler-tab join" data-join-angler="${esc(a.value)}">${icon('plus')} ${esc(a.label)}</button>`;
+      }).join('')}</nav>`
+    : '';
   root.innerHTML = `
+    ${tabs}
     <header class="screen-head">
-      <p class="eyebrow">${isPaused(s) ? 'Gepauzeerd' : 'Sessie loopt'} · gestart ${fmtTime(new Date(s.startedAt))}</p>
+      <p class="eyebrow">${multi ? `${esc(anglerName(anglerOf(s)))} · ` : ''}${isPaused(s) ? 'Gepauzeerd' : 'Sessie loopt'} · gestart ${fmtTime(new Date(s.startedAt))}</p>
       <h1>${esc(s.spot?.name || 'Onbekende stek')}</h1>
     </header>
     <section class="live card">
@@ -197,7 +229,7 @@ function renderVissen() {
 
     <section class="rig card">
       <div>
-        <p class="eyebrow">Nu aan je lijn</p>
+        <p class="eyebrow">${anglerOf(s) === ME ? 'Nu aan je lijn' : `Nu aan de lijn van ${esc(anglerName(anglerOf(s)))}`}</p>
         <p class="rig-main">${esc(lureName(s.lure))}</p>
         ${categoryOf(s.lure) ? `<p class="muted small">${esc(categoryOf(s.lure))}</p>` : ''}
       </div>
@@ -228,6 +260,8 @@ function renderVissen() {
     </div>
     ${pauseHours(s) > 0 && !isPaused(s) ? `<p class="hint center">${fmtDuration(pauseHours(s))} pauze telt niet mee als vistijd.</p>` : ''}`;
 
+  $$('[data-live-angler]', root).forEach((b) => b.addEventListener('click', () => { state.liveAngler = b.dataset.liveAngler; renderVissen(); window.scrollTo(0, 0); }));
+  $$('[data-join-angler]', root).forEach((b) => b.addEventListener('click', () => openJoinSheet(s, b.dataset.joinAngler)));
   $('#add-catch', root).addEventListener('click', () => openCatchSheet(s));
   $('#add-bite', root).addEventListener('click', () => addBite(s));
   $('#stop-session', root).addEventListener('click', () => openStopSheet(s));
@@ -236,6 +270,54 @@ function renderVissen() {
   $('#change-rig', root).addEventListener('click', () => openRigSheet(s));
   $$('[data-catch]', root).forEach((b) => b.addEventListener('click', () => openCatchSheet(s, s.catches.find((f) => f.id === b.dataset.catch))));
   fillPhotos(root);
+}
+
+// ----- Vismaat haakt aan (FL-30) -----
+
+/** Start een sessie voor een andere visser naast een lopende sessie: zelfde stek, plek, weer en omstandigheden. */
+function openJoinSheet(host, angler) {
+  const name = anglerName(angler);
+  const body = el(`<form class="form" novalidate>
+    <p>${esc(name)} begint nu te vissen bij <strong>${esc(host.spot?.name || 'deze stek')}</strong>. Stek, plek, weer en waterhelderheid komen van de lopende sessie.</p>
+    <div class="field"><span class="label">${angler === ME ? 'Jouw kunstaas' : `Kunstaas van ${esc(name)}`}</span><div id="join-lure"></div></div>
+    <button type="submit" class="btn primary huge">Start voor ${esc(name)}</button>
+  </form>`);
+  const sheet = openSheet({ title: `${name} vist mee`, body });
+  const picker = mountLurePicker($('#join-lure', body), (state.last.lureByAngler || {})[angler], angler);
+  body.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!host.groupId) { host.groupId = db.uid(); await saveSession(host); }
+    const now = new Date();
+    const lureId = picker.value || null;
+    const lure = lureSnap(lureById(lureId));
+    const session = {
+      id: db.uid(),
+      angler: angler === ME ? undefined : angler,
+      groupId: host.groupId,
+      startedAt: now.toISOString(),
+      endedAt: null,
+      spot: host.spot,
+      position: host.position,
+      targetSpecies: host.targetSpecies,
+      lureId,
+      lure,
+      waterClarity: host.waterClarity,
+      platform: host.platform,
+      conditions: computedConditions(now, host.position || host.spot),
+      weather: host.weather && host.weather.status === 'ok' ? { ...host.weather } : { status: 'loading' },
+      changes: [{ at: now.toISOString(), lureId, lure }],
+      catches: [],
+      notes: '',
+    };
+    await saveSession(session);
+    state.last = { ...state.last, lureByAngler: { ...(state.last.lureByAngler || {}), [angler]: lureId } };
+    await db.setSetting('lastChoices', state.last);
+    state.liveAngler = angler;
+    sheet.close();
+    render();
+    toast(`Sessie gestart voor ${angler === ME ? 'jou' : name}`);
+    if (session.weather.status !== 'ok') updateWeather(session).then(() => state.tab === 'vissen' && render());
+  });
 }
 
 // ----- Pauzeren (FL-29) -----
@@ -302,7 +384,7 @@ function catchRow(f) {
 
 function renderIdle(root) {
   const done = state.sessions.filter((s) => s.endedAt);
-  const last = done[0];
+  const last = done.find((x) => anglerOf(x) === ME) || done[0];
   const fish = done.reduce((n, s) => n + s.catches.length, 0);
   root.innerHTML = `
     <header class="screen-head">
@@ -342,9 +424,9 @@ function installHint() {
 // ----- Kunstaas kiezen met foto-carousels (FL-24) -----
 
 /** Hoe vaak elk aas is gekozen: bij de start van een sessie en bij elke wissel. */
-function lureUsage() {
+function lureUsage(angler = ME) {
   const count = new Map();
-  for (const s of state.sessions) {
+  for (const s of state.sessions.filter((x) => anglerOf(x) === angler)) {
     const picks = s.changes && s.changes.length ? s.changes : [{ lureId: s.lureId }];
     for (const c of picks) if (c.lureId) count.set(c.lureId, (count.get(c.lureId) || 0) + 1);
   }
@@ -355,17 +437,19 @@ function lureUsage() {
  * Twee carousels: eerst het type, dan het aas zelf (met foto). Meest gekozen eerst.
  * Geeft { value } terug met het gekozen lure-id (of null voor "geen aas").
  */
-function mountLurePicker(container, selectedId) {
-  const usage = lureUsage();
-  const lures = state.lures.filter((l) => (!l.archived || l.id === selectedId) && categoryOf(l));
+function mountLurePicker(container, selectedId, angler = ME) {
+  const usage = lureUsage(angler);
+  const lures = state.lures.filter((l) => ownerOf(l) === angler && (!l.archived || l.id === selectedId) && categoryOf(l));
   const picker = { value: selectedId && lures.some((l) => l.id === selectedId) ? selectedId : null };
   if (!lures.length) {
-    container.innerHTML = `<p class="muted">Je tackle box is nog leeg. Voeg kunstaas toe via het tabblad Tackle box; dan kies je het hier met een tik op de foto.</p>`;
+    container.innerHTML = angler === ME
+      ? `<p class="muted">Je tackle box is nog leeg. Voeg kunstaas toe via het tabblad Tackle box; dan kies je het hier met een tik op de foto.</p>`
+      : `<p class="muted">De tackle box van ${esc(anglerName(angler))} is nog leeg. Voeg zijn kunstaas toe via Tackle box › ${esc(anglerName(angler))}.</p>`;
     return picker;
   }
   const typeUse = new Map();
   for (const l of lures) typeUse.set(l.type, (typeUse.get(l.type) || 0) + (usage.get(l.id) || 0));
-  const unsorted = state.lures.filter((l) => !l.archived && !categoryOf(l)).length;
+  const unsorted = state.lures.filter((l) => ownerOf(l) === angler && !l.archived && !categoryOf(l)).length;
   const types = [...typeUse.keys()].sort((a, b) => typeUse.get(b) - typeUse.get(a) || LURE_TYPES.indexOf(a) - LURE_TYPES.indexOf(b));
   const firstOfType = (t) => lures.find((l) => l.type === t && l.photoId) || lures.find((l) => l.type === t);
   let type = picker.value ? lureById(picker.value).type : types[0];
@@ -435,8 +519,8 @@ function mountLurePicker(container, selectedId) {
   return picker;
 }
 
-function lureOptions(selectedId) {
-  const active = state.lures.filter((l) => (!l.archived && categoryOf(l)) || l.id === selectedId);
+function lureOptions(selectedId, angler = ME) {
+  const active = state.lures.filter((l) => (ownerOf(l) === angler && !l.archived && categoryOf(l)) || l.id === selectedId);
   const groups = LURE_TYPES.map((t) => [t, active.filter((l) => l.type === t)]).filter(([, ls]) => ls.length);
   return `<option value="">Geen / niet in tackle box</option>${groups
     .map(([t, ls]) => `<optgroup label="${esc(t)}">${ls
@@ -453,15 +537,25 @@ function openStartSheet() {
       <div class="spot-list" id="spot-list"><p class="muted">Locatie bepalen…</p></div>
       <button type="button" class="btn ghost small" id="new-spot">${icon('pin')} Nieuwe stek op de kaart</button>
     </div>
+    ${state.anglers.length ? `<div class="field"><span class="label">Wie vissen er?</span>${chips('anglers', anglerChoices(), (last.anglers || [ME]).filter((a) => a === ME || state.anglers.some((x) => x.id === a)), { multi: true })}</div>` : ''}
     <div class="field"><span class="label">Doelsoort(en)</span>${chips('species', SPECIES, last.targetSpecies || ['Snoek'], { multi: true })}</div>
-    <div class="field"><span class="label">Kunstaas</span><div id="start-lure"></div></div>
+    ${anglerChoices().map((a) => `<div class="field" data-angler-lure="${esc(a.value)}"><span class="label">${a.value === ME ? 'Jouw kunstaas' : `Kunstaas van ${esc(a.label)}`}</span><div class="lure-slot"></div></div>`).join('')}
     <div class="field"><span class="label">Waterhelderheid</span>${chips('water', WATER, last.waterClarity || 'Licht troebel')}</div>
     <div class="field"><span class="label">Je vist vanaf</span>${chips('platform', PLATFORMS, 'Kant')}</div>
     <button type="submit" class="btn primary huge">Start</button>
   </form>`);
   wireChips(body);
   const sheet = openSheet({ title: 'Nieuwe sessie', body });
-  const lurePicker = mountLurePicker($('#start-lure', body), last.lureId);
+  const lureByAngler = last.lureByAngler || { [ME]: last.lureId };
+  const pickers = {};
+  for (const a of anglerChoices()) pickers[a.value] = mountLurePicker($(`[data-angler-lure="${a.value}"] .lure-slot`, body), lureByAngler[a.value], a.value);
+  const chosenAnglers = () => (state.anglers.length ? chipValue(body, 'anglers') : [ME]);
+  const showPickers = () => {
+    const chosen = chosenAnglers();
+    for (const a of anglerChoices()) $(`[data-angler-lure="${a.value}"]`, body).hidden = !chosen.includes(a.value);
+  };
+  showPickers();
+  $('.chips[data-name="anglers"]', body)?.addEventListener('change', showPickers);
 
   let gps = null;
   let selectedSpot = null;
@@ -511,36 +605,48 @@ function openStartSheet() {
     const targetSpecies = chipValue(body, 'species');
     if (!targetSpecies.length) { toast('Kies minstens één doelsoort.', 'warn'); return; }
     const spot = spotById(selectedSpot);
-    const lureId = lurePicker.value || null;
-    const lure = lureById(lureId);
+    const anglers = chosenAnglers();
+    if (!anglers.length) { toast('Kies wie er vissen.', 'warn'); return; }
     const waterClarity = chipValue(body, 'water');
     const platform = chipValue(body, 'platform');
     const now = new Date();
     const position = gps && distanceM(gps, spot) < 2000 ? gps : { lat: spot.lat, lng: spot.lng, accuracy: spot.accuracy ?? null };
-    const session = {
-      id: db.uid(),
-      startedAt: now.toISOString(),
-      endedAt: null,
-      spot: { id: spot.id, name: spot.name, lat: spot.lat, lng: spot.lng },
-      position,
-      targetSpecies,
-      lureId,
-      lure: lureSnap(lure),
-      waterClarity,
-      platform,
-      conditions: computedConditions(now, position),
-      weather: { status: 'loading' },
-      changes: [{ at: now.toISOString(), lureId, lure: lureSnap(lure) }],
-      catches: [],
-      notes: '',
-    };
-    state.last = { targetSpecies, lureId, waterClarity };
+    const groupId = anglers.length > 1 ? db.uid() : null;
+    const created = [];
+    const newLures = { ...lureByAngler };
+    for (const angler of anglers) {
+      const lureId = pickers[angler].value || null;
+      const lure = lureById(lureId);
+      newLures[angler] = lureId;
+      const session = {
+        id: db.uid(),
+        angler: angler === ME ? undefined : angler,
+        groupId,
+        startedAt: now.toISOString(),
+        endedAt: null,
+        spot: { id: spot.id, name: spot.name, lat: spot.lat, lng: spot.lng },
+        position,
+        targetSpecies,
+        lureId,
+        lure: lureSnap(lure),
+        waterClarity,
+        platform,
+        conditions: computedConditions(now, position),
+        weather: { status: 'loading' },
+        changes: [{ at: now.toISOString(), lureId, lure: lureSnap(lure) }],
+        catches: [],
+        notes: '',
+      };
+      await saveSession(session);
+      created.push(session);
+    }
+    state.last = { targetSpecies, lureId: newLures[ME] ?? null, lureByAngler: newLures, waterClarity, anglers };
     await db.setSetting('lastChoices', state.last);
-    await saveSession(session);
+    state.liveAngler = anglers.includes(ME) ? ME : anglers[0];
     sheet.close();
     render();
-    toast('Sessie gestart. Succes!');
-    updateWeather(session).then(() => state.tab === 'vissen' && render());
+    toast(anglers.length > 1 ? `Sessies gestart voor ${anglers.map((a) => (a === ME ? 'jou' : anglerName(a))).join(' en ')}. Succes!` : 'Sessie gestart. Succes!');
+    for (const session of created) updateWeather(session).then(() => state.tab === 'vissen' && render());
   });
 }
 
@@ -553,7 +659,7 @@ function openRigSheet(s) {
   </form>`);
   wireChips(body);
   const sheet = openSheet({ title: 'Wissel van aas', body });
-  const lurePicker = mountLurePicker($('#rig-lure', body), s.lureId);
+  const lurePicker = mountLurePicker($('#rig-lure', body), s.lureId, anglerOf(s));
   body.addEventListener('submit', async (e) => {
     e.preventDefault();
     if ((lurePicker.value || null) === (s.lureId || null)) { sheet.close(); return; }
@@ -561,7 +667,7 @@ function openRigSheet(s) {
     s.lure = lureSnap(lureById(s.lureId));
     const change = { id: db.uid(), at: new Date().toISOString(), lureId: s.lureId, lure: s.lure, position: null };
     s.changes = [...(s.changes || []), change];
-    state.last = { ...state.last, lureId: s.lureId };
+    state.last = { ...state.last, lureByAngler: { ...(state.last.lureByAngler || {}), [anglerOf(s)]: s.lureId }, ...(anglerOf(s) === ME ? { lureId: s.lureId } : {}) };
     await db.setSetting('lastChoices', state.last);
     await saveSession(s);
     sheet.close();
@@ -613,7 +719,7 @@ function openCatchSheet(s, existing = null, onSaved = null) {
     </div>
     <details class="more">
       <summary>Aas, tijd en notitie</summary>
-      <label class="field"><span class="label">Kunstaas</span><select id="catch-lure">${lureOptions(existing ? f.lureId : s.lureId)}</select></label>
+      <label class="field"><span class="label">Kunstaas</span><select id="catch-lure">${lureOptions(existing ? f.lureId : s.lureId, anglerOf(s))}</select></label>
       <label class="field"><span class="label">Tijdstip</span><input id="catch-time" type="time" value="${fmtTime(at)}"></label>
       <label class="field"><span class="label">Notitie</span><textarea id="catch-notes" rows="2" maxlength="500" placeholder="Bijv. aanbeet vlak bij de rietkraag">${esc(f.notes || '')}</textarea></label>
     </details>
@@ -736,6 +842,8 @@ function openCatchSheet(s, existing = null, onSaved = null) {
 
 function openStopSheet(s) {
   const start = new Date(s.startedAt);
+  const others = actives().filter((x) => x.id !== s.id && s.groupId && x.groupId === s.groupId);
+  const multiStop = actives().length > 1;
   const defaultEnd = toLocalInput(new Date());
   const body = el(`<form class="form" novalidate>
     <p class="summary-line"><strong>${s.catches.length} ${s.catches.length === 1 ? 'vis' : 'vissen'}</strong>${(s.bites || []).length ? ` en ${s.bites.length} ${s.bites.length === 1 ? 'aanbeet' : 'aanbeten'} zonder vangst` : ''} in ${fmtDuration(sessionHours(s))}${pauseHours(s) > 0 ? ` (plus ${fmtDuration(pauseHours(s))} pauze)` : ''}</p>
@@ -743,9 +851,11 @@ function openStopSheet(s) {
     <label class="field"><span class="label">Gestopt om</span><input id="stop-time" type="datetime-local" value="${defaultEnd}" min="${toLocalInput(start)}" max="${toLocalInput(new Date())}"></label>
     <p class="hint">Vergeten te stoppen? Pas de eindtijd hierboven aan.</p>
     <label class="field"><span class="label">Notitie bij de sessie</span><textarea id="stop-notes" rows="3" maxlength="1000" placeholder="Wat viel je op?">${esc(s.notes || '')}</textarea></label>
+    ${others.length ? `<div class="field"><span class="label">Stopt tegelijk</span>${chips('stopwith', others.map((o) => ({ value: o.id, label: anglerName(anglerOf(o)) })), others.map((o) => o.id), { multi: true })}<p class="hint">Tik om iemand door te laten vissen.</p></div>` : ''}
     <button type="submit" class="btn primary huge">Opslaan en stoppen</button>
   </form>`);
-  const sheet = openSheet({ title: 'Sessie stoppen', body });
+  wireChips(body);
+  const sheet = openSheet({ title: !multiStop ? 'Sessie stoppen' : anglerOf(s) === ME ? 'Jouw sessie stoppen' : `Sessie van ${anglerName(anglerOf(s))} stoppen`, body });
   body.addEventListener('submit', async (e) => {
     e.preventDefault();
     const raw = $('#stop-time', body).value;
@@ -757,9 +867,18 @@ function openStopSheet(s) {
     clampPauses(s); // een lopende pauze eindigt bij het stoppen
     s.notes = $('#stop-notes', body).value.trim();
     await saveSession(s);
+    const stopWith = others.length ? chipValue(body, 'stopwith') : [];
+    let n = 1;
+    for (const o of others.filter((x) => stopWith.includes(x.id))) {
+      if (end <= new Date(o.startedAt)) continue;
+      o.endedAt = end.toISOString();
+      clampPauses(o);
+      await saveSession(o);
+      n++;
+    }
     sheet.close();
     render();
-    toast('Sessie opgeslagen');
+    toast(n > 1 ? `${n} sessies opgeslagen` : 'Sessie opgeslagen');
   });
 }
 
@@ -823,7 +942,7 @@ function renderLogboek() {
           <button type="button" class="log-row swipe-front" data-session="${esc(s.id)}">
           <span class="log-date"><span class="d">${start.getDate()}</span><span class="m">${fmtDate(start).split(' ')[2]}</span></span>
           <span class="log-main">
-            <strong>${esc(s.spot?.name || '')}</strong>
+            <strong>${esc(s.spot?.name || '')}${anglerOf(s) !== ME ? ` <span class="angler-badge">${esc(anglerName(anglerOf(s)))}</span>` : ''}</strong>
             <span class="muted">${fmtDate(start).split(' ')[0]} ${fmtTime(start)}–${fmtTime(new Date(s.endedAt))} · ${esc(lureShort((s.changes && s.changes[0] ? s.changes[0].lure : s.lure)))} · ${esc(s.conditions?.dayPart || '')}</span>
           </span>
           <span class="log-fish ${s.catches.length ? '' : 'zero'}"><b>${s.catches.length}</b><small>${sRate(s)}/u</small></span>
@@ -853,7 +972,7 @@ function renderLogboek() {
   $('#add-past', root).addEventListener('click', () => openSessionForm());
   $('#export-csv', root).addEventListener('click', async () => {
     if (!done.length) { toast('Er zijn nog geen afgeronde sessies om te exporteren.', 'warn'); return; }
-    await saveFile(`fish-logger_${stamp()}.csv`, buildCsv(state.sessions), 'text/csv');
+    await saveFile(`fish-logger_${stamp()}.csv`, buildCsv(state.sessions, (s) => anglerName(anglerOf(s))), 'text/csv');
   });
   $('#make-backup', root).addEventListener('click', async () => {
     const json = await buildBackup();
@@ -1082,7 +1201,7 @@ function openSessionDetail(id) {
     const start = new Date(s.startedAt);
     const end = new Date(s.endedAt);
     const c = s.conditions || {};
-    $('.sheet-head h2', sheet.el).textContent = s.spot?.name || 'Sessie';
+    $('.sheet-head h2', sheet.el).textContent = `${s.spot?.name || 'Sessie'}${anglerOf(s) !== ME ? ` · ${anglerName(anglerOf(s))}` : ''}`;
     const wissels = (s.changes || []).length > 1 ? s.changes.slice(1) : [];
     const mapItems = sessionMapItems(s);
     const nPlaced = mapItems.catches.length + mapItems.bites.length + mapItems.switches.length + (mapItems.start ? 1 : 0);
@@ -1199,8 +1318,9 @@ function openSessionForm(existing = null, onSaved = null) {
       <label class="field"><span class="label">Begin</span><input id="sf-start" type="time" value="${fmtTime(start)}"></label>
       <label class="field"><span class="label">Einde</span><input id="sf-end" type="time" value="${fmtTime(end)}"></label>
     </div>
+    ${state.anglers.length ? `<div class="field"><span class="label">Visser</span>${chips('sf-angler', anglerChoices(), s ? anglerOf(s) : ME)}</div>` : ''}
     <div class="field"><span class="label">Doelsoort(en)</span>${chips('species', SPECIES, s?.targetSpecies || last.targetSpecies || ['Snoek'], { multi: true })}</div>
-    <label class="field"><span class="label">Kunstaas${s && s.changes?.length > 1 ? ' bij de start' : ''}</span><select id="sf-lure">${lureOptions(s ? first?.lureId : last.lureId)}</select></label>
+    <label class="field"><span class="label">Kunstaas${s && s.changes?.length > 1 ? ' bij de start' : ''}</span><select id="sf-lure">${lureOptions(s ? first?.lureId : last.lureId, s ? anglerOf(s) : ME)}</select></label>
     <div class="field"><span class="label">Waterhelderheid</span>${chips('water', WATER, s?.waterClarity || last.waterClarity || 'Licht troebel')}</div>
     <div class="field"><span class="label">Je viste vanaf</span>${chips('platform', PLATFORMS, s?.platform || 'Kant')}</div>
     <label class="field"><span class="label">Notitie</span><textarea id="sf-notes" rows="2" maxlength="1000">${esc(s?.notes || '')}</textarea></label>
@@ -1209,6 +1329,11 @@ function openSessionForm(existing = null, onSaved = null) {
   </form>`);
   wireChips(body);
   const sheet = openSheet({ title: s ? 'Sessie bewerken' : 'Sessie achteraf', body });
+  const sfAngler = () => (state.anglers.length ? chipValue(body, 'sf-angler') || ME : ME);
+  $('.chips[data-name="sf-angler"]', body)?.addEventListener('change', () => {
+    const a = sfAngler();
+    $('#sf-lure', body).innerHTML = lureOptions((state.last.lureByAngler || {})[a] ?? null, a);
+  });
 
   $('#sf-new-spot', body).addEventListener('click', () => {
     openSpotEditor({
@@ -1241,6 +1366,8 @@ function openSessionForm(existing = null, onSaved = null) {
     const startChanged = !s || s.startedAt !== newStart.toISOString();
 
     const record = s || { id: db.uid(), catches: [], addedLater: true };
+    const who = sfAngler();
+    record.angler = who === ME ? undefined : who;
     record.startedAt = newStart.toISOString();
     record.endedAt = newEnd.toISOString();
     record.spot = { id: spot.id, name: spot.name, lat: spot.lat, lng: spot.lng };
@@ -1294,8 +1421,11 @@ function openSessionForm(existing = null, onSaved = null) {
 function renderInzichten() {
   const root = $('#screen-inzichten');
   const species = root.dataset.species || 'Alle';
+  const who = root.dataset.angler || 'Iedereen';
+  const anglerIds = [...new Set(state.sessions.filter((x) => x.endedAt).map(anglerOf))];
+  const pool = who === 'Iedereen' ? state.sessions : state.sessions.filter((x) => anglerOf(x) === who);
   const present = SPECIES.filter((sp) => state.sessions.some((s) => s.endedAt && !isFlySession(s) && ((s.targetSpecies || []).includes(sp) || s.catches.some((f) => f.species === sp))));
-  const { sessions, fishOf } = scope(state.sessions, species);
+  const { sessions, fishOf } = scope(pool, species);
   const tot = overall(sessions, fishOf);
   const enough = tot.sessions >= MIN_SESSIONS;
   const combos = bestCombinations(sessions, fishOf);
@@ -1324,6 +1454,7 @@ function renderInzichten() {
       <p class="eyebrow">Inzichten</p>
       <h1>Wanneer vang je het meest?</h1>
     </header>
+    ${anglerIds.length > 1 || anglerIds.some((a) => a !== ME) ? chips('insight-angler', [{ value: 'Iedereen', label: 'Iedereen' }, ...anglerChoices().filter((a) => anglerIds.includes(a.value))], who) : ''}
     ${present.length > 1 ? chips('insight-species', ['Alle', ...present], species) : ''}
     ${tot.sessions === 0 ? `<div class="card empty-state">
       <p><strong>Nog geen afgeronde sessies${species !== 'Alle' ? ` voor ${esc(species.toLowerCase())}` : ''}.</strong></p>
@@ -1346,12 +1477,13 @@ function renderInzichten() {
     <p class="hint legend-hint"><span class="avg-swatch" aria-hidden="true"></span> Streepje = je gemiddelde van ${perHour(tot.rate)} per uur. Dagdeel en aas tellen per uur dat je zo viste, ook binnen één sessie.</p>
     ${FACTORS.map(factorCard).join('')}`}`;
 
-  root.querySelector('.chips')?.addEventListener('click', (e) => {
+  $$('.chips[data-name^="insight-"]', root).forEach((group) => group.addEventListener('click', (e) => {
     const b = e.target.closest('.chip');
     if (!b) return;
-    root.dataset.species = b.dataset.value;
+    if (group.dataset.name === 'insight-angler') root.dataset.angler = b.dataset.value;
+    else root.dataset.species = b.dataset.value;
     renderInzichten();
-  });
+  }));
 }
 
 // ---------- Tackle box ----------
@@ -1359,18 +1491,25 @@ function renderInzichten() {
 function renderTackle() {
   const root = $('#screen-tacklebox');
   const showHidden = root.dataset.showHidden === 'true';
-  const list = state.lures.filter((l) => showHidden || !l.archived);
+  const owner = state.tackleOwner === ME || state.anglers.some((a) => a.id === state.tackleOwner) ? state.tackleOwner : ME;
+  const mine = state.lures.filter((l) => ownerOf(l) === owner);
+  const list = mine.filter((l) => showHidden || !l.archived);
   const groups = LURE_TYPES.map((t) => [t, list.filter((l) => l.type === t)]).filter(([, ls]) => ls.length);
   const noCat = list.filter((l) => !l.archived && !categoryOf(l));
   if (noCat.length) groups.unshift(['Kies een categorie', noCat]);
   const oldHidden = showHidden ? list.filter((l) => l.archived && !categoryOf(l)) : [];
   if (oldHidden.length) groups.push(['Oude categorie (verborgen)', oldHidden]);
-  const hiddenCount = state.lures.filter((l) => l.archived).length;
+  const hiddenCount = mine.filter((l) => l.archived).length;
   root.innerHTML = `
     <header class="screen-head">
-      <p class="eyebrow">Tackle box</p>
-      <h1>${state.lures.filter((l) => !l.archived).length} kunstaas</h1>
+      <p class="eyebrow">Tackle box${owner !== ME ? ` van ${esc(anglerName(owner))}` : ''}</p>
+      <h1>${mine.filter((l) => !l.archived).length} kunstaas</h1>
     </header>
+    <nav class="angler-tabs" aria-label="Tackle box van">
+      ${anglerChoices().map((a) => `<button type="button" class="angler-tab ${a.value === owner ? 'on' : ''}" data-owner="${esc(a.value)}" aria-pressed="${a.value === owner}">${esc(a.label)}</button>`).join('')}
+      <button type="button" class="angler-tab join" id="add-angler">${icon('plus')} Vismaat</button>
+    </nav>
+    ${owner !== ME ? `<p class="hint">Dit is het aas van ${esc(anglerName(owner))}. Hij kiest hieruit als hij meevist. <button type="button" class="link-btn" id="rename-angler">Naam wijzigen</button></p>` : ''}
     <button class="btn primary wide" id="add-lure" type="button">${icon('plus')} Kunstaas toevoegen</button>
     ${groups.length ? groups.map(([t, ls]) => `
       <section class="lure-group">
@@ -1387,7 +1526,10 @@ function renderTackle() {
       <button class="btn small" type="button" id="recog-settings">${icon('camera')} Instellingen</button>
     </section>`;
 
-  $('#add-lure', root).addEventListener('click', () => openLureSheet());
+  $('#add-lure', root).addEventListener('click', () => openLureSheet(null, owner));
+  $$('[data-owner]', root).forEach((b) => b.addEventListener('click', () => { state.tackleOwner = b.dataset.owner; renderTackle(); }));
+  $('#add-angler', root).addEventListener('click', () => openAnglerSheet());
+  $('#rename-angler', root)?.addEventListener('click', () => openAnglerSheet(state.anglers.find((a) => a.id === owner)));
   $('#recog-settings', root).addEventListener('click', () => openKeySheet(() => renderTackle()));
   Promise.all([getKey(), getMode()]).then(([k, m]) => {
     const p = $('#recog-state', root);
@@ -1445,7 +1587,29 @@ async function openKeySheet(onDone) {
   });
 }
 
-function openLureSheet(lure = null) {
+/** Vismaat toevoegen of hernoemen (FL-30). */
+function openAnglerSheet(angler = null) {
+  const body = el(`<form class="form" novalidate>
+    <label class="field"><span class="label">Naam van je vismaat</span><input id="angler-name" type="text" maxlength="30" autocomplete="off" value="${esc(angler?.name || '')}" placeholder="Bijv. Leon"></label>
+    <p class="hint">Je vismaat krijgt een eigen tackle box. Bij het starten van een sessie kies je wie er vissen.</p>
+    <button type="submit" class="btn primary wide">${angler ? 'Opslaan' : 'Vismaat toevoegen'}</button>
+  </form>`);
+  const sheet = openSheet({ title: angler ? 'Naam wijzigen' : 'Nieuwe vismaat', body });
+  body.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = $('#angler-name', body).value.trim();
+    if (!name) { toast('Vul een naam in.', 'warn'); return; }
+    if (name.toLowerCase() === 'ik' || state.anglers.some((a) => a !== angler && a.name.toLowerCase() === name.toLowerCase())) { toast('Deze naam bestaat al.', 'warn'); return; }
+    if (angler) angler.name = name;
+    else { const a = { id: db.uid(), name }; state.anglers.push(a); state.tackleOwner = a.id; }
+    await db.setSetting('anglers', state.anglers);
+    sheet.close();
+    renderTackle();
+    toast(angler ? 'Naam gewijzigd' : `${name} toegevoegd`);
+  });
+}
+
+function openLureSheet(lure = null, owner = ME) {
   const l = lure || {};
   const body = el(`<form class="form" novalidate>
     <div class="field">
@@ -1549,6 +1713,7 @@ function openLureSheet(lure = null) {
       weightG: num('#lure-weight'),
       ...(found ? { action: found.action || l.action || '', sourceUrl: found.source || l.sourceUrl || '' } : {}),
       archived: l.archived || false,
+      owner: lure ? l.owner : owner === ME ? undefined : owner,
       createdAt: l.createdAt || new Date().toISOString(),
       ...extra,
     };

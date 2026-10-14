@@ -397,6 +397,20 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; 
 .pop-link { display: flex; flex-direction: column; gap: 6px; width: 100%; border: 0; background: none; padding: 0; text-align: left; color: inherit; font: inherit; cursor: pointer; }
 .pop-cta { color: var(--water); font-weight: 700; font-size: .85rem; }
 
+/* Vissers (FL-30) */
+.angler-tabs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding: 2px; margin: -2px; }
+.angler-tabs::-webkit-scrollbar { display: none; }
+.angler-tab {
+  flex: none; min-height: 42px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface);
+  font-weight: 600; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--ink);
+}
+.angler-tab.on { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.angler-tab.join { border-style: dashed; color: var(--muted); font-weight: 500; }
+.angler-tab .ico { width: 16px; height: 16px; }
+.tab-count { min-width: 22px; height: 22px; border-radius: 11px; background: var(--accent); color: var(--accent-ink); font-size: .8rem; display: inline-grid; place-items: center; padding: 0 6px; font-variant-numeric: tabular-nums; }
+.tab-paused { font-size: .72rem; font-weight: 500; opacity: .8; }
+.angler-badge { display: inline-block; vertical-align: 2px; margin-left: 4px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-family: var(--font-body); font-size: .72rem; font-weight: 700; letter-spacing: .02em; }
+
 /* Pauze (FL-29) */
 .session-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 10px; }
 .pause-card { border: 2px dashed var(--water); background: var(--surface); align-items: stretch; }
