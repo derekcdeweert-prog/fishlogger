@@ -58,7 +58,7 @@ export const FACTORS = [
   { key: 'moon', label: 'Maan', kind: 'session', order: ['Nieuwe maan', 'Wassend', 'Volle maan', 'Afnemend'], get: (s) => moonGroup(s.conditions) },
   { key: 'water', label: 'Waterhelderheid', kind: 'session', order: ['Helder', 'Licht troebel', 'Troebel'], get: (s) => s.waterClarity },
   { key: 'platform', label: 'Vanaf', kind: 'session', order: ['Kant', 'Wadend', 'Boot'], get: (s) => s.platform },
-  { key: 'spot', label: 'Stek', kind: 'session', get: (s) => s.spot?.name },
+  { key: 'spot', label: 'Plek', kind: 'session', get: (s) => s.placeName || s.spot?.name },
   { key: 'category', label: 'Aascategorie', kind: 'segment', field: 'category', order: LURE_TYPES },
   { key: 'lure', label: 'Kunstaas', kind: 'segment', field: 'lure' },
 ];

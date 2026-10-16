@@ -1,6 +1,6 @@
 // Fish Logger — release 1
 import * as db from './db.js';
-import { computedConditions, fetchWeather, distanceM, DEFAULT_POS } from './conditions.js';
+import { computedConditions, fetchWeather, fetchPlaceName, distanceM, DEFAULT_POS } from './conditions.js';
 import { buildCsv, buildBackup, restoreBackup, saveFile, stamp, sessionHours } from './data-export.js';
 import { MapScreen, openSpotEditor, openPointPicker, createSessionMap, getPosition } from './map.js';
 import { recognizeLure, getKey, setKey, clearKey, getMode, setMode } from './recognize.js';
@@ -41,6 +41,8 @@ const active = () => {
   return a.find((s) => anglerOf(s) === state.liveAngler) || a.find((s) => anglerOf(s) === ME) || a[0] || null;
 };
 const spotById = (id) => state.spots.find((s) => s.id === id);
+/** Naam van de plek van een sessie: opgezochte plaatsnaam, anders de oude stek (FL-31). */
+const placeOf = (s) => s.placeName || s.spot?.name || 'Eigen locatie';
 const lureById = (id) => state.lures.find((l) => l.id === id);
 const lureSnap = (l) => (l ? { type: l.type, name: l.name, color: l.color, sizeCm: l.sizeCm, weightG: l.weightG } : null);
 // Vangst per uur pas tonen na een kwartier; daarvoor zegt het getal nog niets.
@@ -127,6 +129,19 @@ async function updateWeather(session) {
   await saveSession(session);
 }
 
+/** Zoekt de plaatsnaam bij de startplek; zonder bereik later opnieuw. */
+async function updatePlace(session) {
+  if (session.placeName || !session.position) return;
+  try {
+    const name = await fetchPlaceName(session.position);
+    session.placeName = name || null;
+    session.placeTriedAt = null;
+  } catch (_) {
+    session.placeTriedAt = new Date().toISOString();
+  }
+  await saveSession(session);
+}
+
 /** Vult het weer aan voor sessies die zonder bereik zijn gestart. */
 async function backfillWeather() {
   if (weatherBusy || !navigator.onLine) return;
@@ -135,7 +150,9 @@ async function backfillWeather() {
     // Mislukte pogingen hooguit eens per 6 uur opnieuw proberen.
     const todo = state.sessions.filter((s) => s.weather?.status !== 'ok' && !(s.weather?.status === 'failed' && Date.now() - Date.parse(s.weather.triedAt || 0) < 6 * 3600e3));
     for (const s of todo) await updateWeather(s);
-    if (todo.length) render();
+    const places = state.sessions.filter((s) => !s.placeName && !s.spot && s.position && !(s.placeTriedAt && Date.now() - Date.parse(s.placeTriedAt) < 3600e3));
+    for (const s of places) { await updatePlace(s); await new Promise((r) => setTimeout(r, 1100)); } // max. 1 verzoek per seconde
+    if (todo.length || places.length) render();
   } finally {
     weatherBusy = false;
   }
@@ -215,7 +232,7 @@ function renderVissen() {
     ${tabs}
     <header class="screen-head">
       <p class="eyebrow">${multi ? `${esc(anglerName(anglerOf(s)))} · ` : ''}${isPaused(s) ? 'Gepauzeerd' : 'Sessie loopt'} · gestart ${fmtTime(new Date(s.startedAt))}</p>
-      <h1>${esc(s.spot?.name || 'Onbekende stek')}</h1>
+      <h1>${esc(placeOf(s))}</h1>
     </header>
     <section class="live card">
       <div class="live-numbers">
@@ -278,7 +295,7 @@ function renderVissen() {
 function openJoinSheet(host, angler) {
   const name = anglerName(angler);
   const body = el(`<form class="form" novalidate>
-    <p>${esc(name)} begint nu te vissen bij <strong>${esc(host.spot?.name || 'deze stek')}</strong>. Stek, plek, weer en waterhelderheid komen van de lopende sessie.</p>
+    <p>${esc(name)} begint nu te vissen bij <strong>${esc(placeOf(host))}</strong>. Plek, weer en waterhelderheid komen van de lopende sessie.</p>
     <div class="field"><span class="label">${angler === ME ? 'Jouw kunstaas' : `Kunstaas van ${esc(name)}`}</span><div id="join-lure"></div></div>
     <button type="submit" class="btn primary huge">Start voor ${esc(name)}</button>
   </form>`);
@@ -296,14 +313,15 @@ function openJoinSheet(host, angler) {
       groupId: host.groupId,
       startedAt: now.toISOString(),
       endedAt: null,
-      spot: host.spot,
+      spot: host.spot || null,
+      placeName: host.placeName || null,
       position: host.position,
       targetSpecies: host.targetSpecies,
       lureId,
       lure,
       waterClarity: host.waterClarity,
       platform: host.platform,
-      conditions: computedConditions(now, host.position || host.spot),
+      conditions: computedConditions(now, host.position || host.spot || DEFAULT_POS),
       weather: host.weather && host.weather.status === 'ok' ? { ...host.weather } : { status: 'loading' },
       changes: [{ at: now.toISOString(), lureId, lure }],
       catches: [],
@@ -397,13 +415,13 @@ function renderIdle(root) {
     ${last ? `
       <section class="card">
         <p class="eyebrow">Vorige sessie</p>
-        <p class="last-line"><strong>${esc(last.spot?.name || '')}</strong> · ${fmtDate(new Date(last.startedAt))}</p>
+        <p class="last-line"><strong>${esc(placeOf(last))}</strong> · ${fmtDate(new Date(last.startedAt))}</p>
         <p class="muted">${fmtDuration(sessionHours(last))} · ${last.catches.length} ${last.catches.length === 1 ? 'vis' : 'vissen'} · ${sRate(last)} per uur</p>
       </section>
       <section class="totals">
         <div><span class="big">${done.length}</span><span class="lbl">sessies</span></div>
         <div><span class="big">${fish}</span><span class="lbl">vissen</span></div>
-        <div><span class="big">${state.spots.filter((s) => !s.archived).length}</span><span class="lbl">stekken</span></div>
+        <div><span class="big">${fmtNum(done.reduce((n, x) => n + sessionHours(x), 0), 0)}</span><span class="lbl">uur gevist</span></div>
       </section>` : ''}
     ${installHint()}`;
   $('#start-session', root).addEventListener('click', openStartSheet);
@@ -533,9 +551,11 @@ function openStartSheet() {
   const last = state.last;
   const body = el(`<form class="form" novalidate>
     <div class="field">
-      <span class="label">Stek</span>
-      <div class="spot-list" id="spot-list"><p class="muted">Locatie bepalen…</p></div>
-      <button type="button" class="btn ghost small" id="new-spot">${icon('pin')} Nieuwe stek op de kaart</button>
+      <span class="label">Plek</span>
+      <div class="place-row">
+        <span class="place-text" id="start-place" aria-live="polite"><span class="spinner" aria-hidden="true"></span> Locatie bepalen…</span>
+        <button type="button" class="btn ghost small" id="start-place-map">${icon('map')} Op kaart</button>
+      </div>
     </div>
     ${state.anglers.length ? `<div class="field"><span class="label">Wie vissen er?</span>${chips('anglers', anglerChoices(), (last.anglers || [ME]).filter((a) => a === ME || state.anglers.some((x) => x.id === a)), { multi: true })}</div>` : ''}
     <div class="field"><span class="label">Doelsoort(en)</span>${chips('species', SPECIES, last.targetSpecies || ['Snoek'], { multi: true })}</div>
@@ -557,60 +577,43 @@ function openStartSheet() {
   showPickers();
   $('.chips[data-name="anglers"]', body)?.addEventListener('change', showPickers);
 
+  // FL-31: de sessie start op je GPS-locatie; geen opgeslagen stekken meer.
   let gps = null;
-  let selectedSpot = null;
-
-  const renderSpots = () => {
-    const list = $('#spot-list', body);
-    const spots = state.spots.filter((s) => !s.archived).map((s) => ({ ...s, dist: gps ? distanceM(gps, s) : null }));
-    if (gps) spots.sort((a, b) => a.dist - b.dist);
-    if (!selectedSpot && gps && spots[0] && spots[0].dist <= 200) selectedSpot = spots[0].id;
-    if (!spots.length) {
-      list.innerHTML = `<p class="muted">Nog geen stekken. Leg je eerste stek vast op de kaart.</p>`;
-      return;
-    }
-    list.innerHTML = spots
-      .slice(0, 8)
-      .map((s) => `<button type="button" class="spot-opt ${s.id === selectedSpot ? 'on' : ''}" data-spot="${esc(s.id)}" aria-pressed="${s.id === selectedSpot}">
-        <span>${esc(s.name)}</span>
-        <span class="muted">${s.dist != null ? (s.dist < 1000 ? `${Math.round(s.dist)} m` : `${fmtNum(s.dist / 1000)} km`) : ''}</span>
-      </button>`)
-      .join('');
+  let picked = null;
+  let gpsDone = false;
+  const showPlace = () => {
+    const t = $('#start-place', body);
+    if (picked) t.textContent = 'Op de kaart gekozen';
+    else if (gps) t.textContent = `Je locatie (± ${gps.accuracy} m)`;
+    else if (!gpsDone) t.innerHTML = '<span class="spinner" aria-hidden="true"></span> Locatie bepalen…';
+    else t.textContent = 'Geen GPS. Kies je plek op de kaart.';
   };
-  renderSpots();
-  getPosition({ timeout: 12000 })
-    .then((p) => { gps = p; renderSpots(); })
-    .catch(() => { renderSpots(); });
-
-  $('#spot-list', body).addEventListener('click', (e) => {
-    const b = e.target.closest('[data-spot]');
-    if (!b) return;
-    selectedSpot = b.dataset.spot;
-    renderSpots();
-  });
-
-  $('#new-spot', body).addEventListener('click', () => {
-    openSpotEditor({
-      onSave: async (spot) => {
-        const saved = await saveSpot(spot);
-        selectedSpot = saved.id;
-        renderSpots();
-      },
+  getPosition({ timeout: 15000, maximumAge: 0 })
+    .then((p) => { gps = p; })
+    .catch(() => {})
+    .finally(() => { gpsDone = true; if (document.body.contains(body)) showPlace(); });
+  $('#start-place-map', body).addEventListener('click', () => {
+    openPointPicker({
+      title: 'Waar vis je?',
+      start: picked || gps,
+      fallback: gps,
+      hint: 'Sleep de stip naar de plek waar je vist, of tik op de kaart.',
+      onSave: (p) => { picked = p; showPlace(); },
     });
   });
 
   body.addEventListener('submit', async (e) => {
     e.preventDefault();
-    if (!selectedSpot) { toast('Kies eerst een stek of leg een nieuwe vast.', 'warn'); return; }
+    const where = picked || gps;
+    if (!where) { toast(gpsDone ? 'Kies je plek op de kaart.' : 'Even wachten op je locatie, of kies je plek op de kaart.', 'warn'); return; }
     const targetSpecies = chipValue(body, 'species');
     if (!targetSpecies.length) { toast('Kies minstens één doelsoort.', 'warn'); return; }
-    const spot = spotById(selectedSpot);
     const anglers = chosenAnglers();
     if (!anglers.length) { toast('Kies wie er vissen.', 'warn'); return; }
     const waterClarity = chipValue(body, 'water');
     const platform = chipValue(body, 'platform');
     const now = new Date();
-    const position = gps && distanceM(gps, spot) < 2000 ? gps : { lat: spot.lat, lng: spot.lng, accuracy: spot.accuracy ?? null };
+    const position = { lat: where.lat, lng: where.lng, accuracy: where.accuracy ?? null };
     const groupId = anglers.length > 1 ? db.uid() : null;
     const created = [];
     const newLures = { ...lureByAngler };
@@ -624,7 +627,8 @@ function openStartSheet() {
         groupId,
         startedAt: now.toISOString(),
         endedAt: null,
-        spot: { id: spot.id, name: spot.name, lat: spot.lat, lng: spot.lng },
+        spot: null,
+        placeName: null,
         position,
         targetSpecies,
         lureId,
@@ -647,6 +651,14 @@ function openStartSheet() {
     render();
     toast(anglers.length > 1 ? `Sessies gestart voor ${anglers.map((a) => (a === ME ? 'jou' : anglerName(a))).join(' en ')}. Succes!` : 'Sessie gestart. Succes!');
     for (const session of created) updateWeather(session).then(() => state.tab === 'vissen' && render());
+    // Eén plaatsnaam opzoeken en aan alle sessies van deze start geven.
+    fetchPlaceName(position)
+      .then(async (name) => {
+        if (!name) return;
+        for (const session of created) { session.placeName = name; await saveSession(session); }
+        render();
+      })
+      .catch(() => {});
   });
 }
 
@@ -942,7 +954,7 @@ function renderLogboek() {
           <button type="button" class="log-row swipe-front" data-session="${esc(s.id)}">
           <span class="log-date"><span class="d">${start.getDate()}</span><span class="m">${fmtDate(start).split(' ')[2]}</span></span>
           <span class="log-main">
-            <strong>${esc(s.spot?.name || '')}${anglerOf(s) !== ME ? ` <span class="angler-badge">${esc(anglerName(anglerOf(s)))}</span>` : ''}</strong>
+            <strong>${esc(placeOf(s))}${anglerOf(s) !== ME ? ` <span class="angler-badge">${esc(anglerName(anglerOf(s)))}</span>` : ''}</strong>
             <span class="muted">${fmtDate(start).split(' ')[0]} ${fmtTime(start)}–${fmtTime(new Date(s.endedAt))} · ${esc(lureShort((s.changes && s.changes[0] ? s.changes[0].lure : s.lure)))} · ${esc(s.conditions?.dayPart || '')}</span>
           </span>
           <span class="log-fish ${s.catches.length ? '' : 'zero'}"><b>${s.catches.length}</b><small>${sRate(s)}/u</small></span>
@@ -1179,7 +1191,7 @@ function sessionMapItems(s) {
   const t = (x) => fmtTime(new Date(x.at));
   const start = s.position || (s.spot ? { lat: s.spot.lat, lng: s.spot.lng } : null);
   return {
-    start: start ? { lat: start.lat, lng: start.lng, title: `Start · ${fmtTime(new Date(s.startedAt))}`, sub: s.spot?.name || '' } : null,
+    start: start ? { lat: start.lat, lng: start.lng, title: `Start · ${fmtTime(new Date(s.startedAt))}`, sub: placeOf(s) } : null,
     catches: s.catches.filter((f) => f.position).map((f) => ({
       catchId: f.id,
       lat: f.position.lat, lng: f.position.lng,
@@ -1201,7 +1213,7 @@ function openSessionDetail(id) {
     const start = new Date(s.startedAt);
     const end = new Date(s.endedAt);
     const c = s.conditions || {};
-    $('.sheet-head h2', sheet.el).textContent = `${s.spot?.name || 'Sessie'}${anglerOf(s) !== ME ? ` · ${anglerName(anglerOf(s))}` : ''}`;
+    $('.sheet-head h2', sheet.el).textContent = `${placeOf(s)}${anglerOf(s) !== ME ? ` · ${anglerName(anglerOf(s))}` : ''}`;
     const wissels = (s.changes || []).length > 1 ? s.changes.slice(1) : [];
     const mapItems = sessionMapItems(s);
     const nPlaced = mapItems.catches.length + mapItems.bites.length + mapItems.switches.length + (mapItems.start ? 1 : 0);
@@ -1309,9 +1321,11 @@ function openSessionForm(existing = null, onSaved = null) {
   const end = s ? new Date(s.endedAt) : (() => { const d = new Date(start); d.setHours(d.getHours() + 2); return d; })();
   const body = el(`<form class="form" novalidate>
     <div class="field">
-      <span class="label">Stek</span>
-      <select id="sf-spot">${spotOptions(s?.spot?.id)}</select>
-      <button type="button" class="btn ghost small" id="sf-new-spot">${icon('pin')} Nieuwe stek op de kaart</button>
+      <span class="label">Plek</span>
+      <div class="place-row">
+        <span class="place-text" id="sf-place"></span>
+        <button type="button" class="btn ghost small" id="sf-place-map">${icon('map')} Op kaart</button>
+      </div>
     </div>
     <label class="field"><span class="label">Datum</span><input id="sf-date" type="date" value="${dateInput(start)}" max="${dateInput(new Date())}"></label>
     <div class="two">
@@ -1335,19 +1349,25 @@ function openSessionForm(existing = null, onSaved = null) {
     $('#sf-lure', body).innerHTML = lureOptions((state.last.lureByAngler || {})[a] ?? null, a);
   });
 
-  $('#sf-new-spot', body).addEventListener('click', () => {
-    openSpotEditor({
-      onSave: async (spot) => {
-        const saved = await saveSpot(spot);
-        $('#sf-spot', body).innerHTML = spotOptions(saved.id);
-      },
+  let where = s ? s.position || (s.spot ? { lat: s.spot.lat, lng: s.spot.lng, accuracy: null } : null) : null;
+  let whereChanged = false;
+  const showWhere = () => {
+    $('#sf-place', body).textContent = where ? (whereChanged ? 'Op de kaart gekozen' : s ? placeOf(s) : `Je huidige locatie${where.accuracy ? ` (± ${where.accuracy} m)` : ''}`) : 'Kies de plek op de kaart';
+  };
+  showWhere();
+  if (!where) getPosition({ timeout: 10000 }).then((p) => { if (!where) { where = p; showWhere(); } }).catch(() => {});
+  $('#sf-place-map', body).addEventListener('click', () => {
+    openPointPicker({
+      title: 'Waar viste je?',
+      start: where,
+      hint: 'Sleep de stip naar de plek waar je viste, of tik op de kaart.',
+      onSave: (p) => { where = p; whereChanged = true; showWhere(); },
     });
   });
 
   body.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const spot = spotById($('#sf-spot', body).value);
-    if (!spot) { toast('Kies een stek.', 'warn'); return; }
+    if (!where) { toast('Kies de plek op de kaart.', 'warn'); return; }
     const date = $('#sf-date', body).value;
     const t1 = $('#sf-start', body).value;
     const t2 = $('#sf-end', body).value;
@@ -1361,8 +1381,8 @@ function openSessionForm(existing = null, onSaved = null) {
     if (!targetSpecies.length) { toast('Kies minstens één doelsoort.', 'warn'); return; }
     const lureId = $('#sf-lure', body).value || null;
     const lure = lureSnap(lureById(lureId)) || (s && first?.lureId === lureId ? first.lure : null);
-    const position = { lat: spot.lat, lng: spot.lng, accuracy: spot.accuracy ?? null };
-    const spotChanged = !s || s.spot?.id !== spot.id;
+    const position = { lat: where.lat, lng: where.lng, accuracy: where.accuracy ?? null };
+    const spotChanged = !s || whereChanged;
     const startChanged = !s || s.startedAt !== newStart.toISOString();
 
     const record = s || { id: db.uid(), catches: [], addedLater: true };
@@ -1370,8 +1390,10 @@ function openSessionForm(existing = null, onSaved = null) {
     record.angler = who === ME ? undefined : who;
     record.startedAt = newStart.toISOString();
     record.endedAt = newEnd.toISOString();
-    record.spot = { id: spot.id, name: spot.name, lat: spot.lat, lng: spot.lng };
-    if (spotChanged || !record.position) record.position = position;
+    if (spotChanged || !record.position) {
+      record.position = position;
+      if (spotChanged) { record.spot = null; record.placeName = null; }
+    }
     record.targetSpecies = targetSpecies;
     record.waterClarity = chipValue(body, 'water');
     record.platform = chipValue(body, 'platform');
@@ -1399,6 +1421,7 @@ function openSessionForm(existing = null, onSaved = null) {
     await saveSession(record);
     sheet.close();
     render();
+    if (!record.placeName && !record.spot) updatePlace(record).then(() => render());
     let refresh = onSaved;
     if (!s) {
       toast('Sessie toegevoegd. Voeg nu je vangsten toe.');
@@ -1756,10 +1779,13 @@ function shell() {
     if (g) setTab(g.dataset.goto);
   });
   mapScreen = new MapScreen($('#screen-kaart'), {
-    getSpots: async () => state.spots,
-    statsFor: spotStats,
-    onEditSpot: editSpot,
-    onNewSpot: () => openSpotEditor({ onSave: saveSpot }),
+    getStarts: async () =>
+      state.sessions
+        .filter((s) => s.endedAt && (s.position || s.spot) && !isFlySession(s))
+        .map((s) => {
+          const p = s.position || s.spot;
+          return { lat: p.lat, lng: p.lng, title: placeOf(s), when: `${fmtDate(new Date(s.startedAt))}${anglerOf(s) !== ME ? ` · ${anglerName(anglerOf(s))}` : ''}`, fish: s.catches.length, sessionId: s.id };
+        }),
     getCatches: async () =>
       state.sessions.flatMap((s) =>
         s.catches
@@ -1771,7 +1797,7 @@ function shell() {
             lengthCm: c.lengthCm,
             when: `${fmtDate(new Date(c.at))} ${fmtTime(new Date(c.at))}`,
             lure: c.lure ? lureName(c.lure) : '',
-            spotName: s.spot?.name || '',
+            spotName: placeOf(s),
             sessionId: s.id,
           })),
       ),

@@ -228,3 +228,20 @@ export function distanceM(a, b) {
   const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * RAD) * Math.cos(b.lat * RAD) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(s));
 }
+
+// ---------- Plaatsnaam (FL-31) ----------
+
+/** Zoekt een naam voor een plek via OpenStreetMap, bijv. "Kromme Rijn · Bunnik". */
+export async function fetchPlaceName(pos) {
+  const params = new URLSearchParams({
+    format: 'jsonv2', lat: pos.lat.toFixed(5), lon: pos.lng.toFixed(5), zoom: '16', addressdetails: '1', 'accept-language': 'nl',
+  });
+  const res = await fetch(`https://nominatim.openstreetmap.org/reverse?${params}`);
+  if (!res.ok) throw new Error(`Plaatsnaam niet gevonden (${res.status})`);
+  const d = await res.json();
+  const a = d.address || {};
+  const water = ['water', 'waterway'].includes(d.category) || d.type === 'water' ? d.name : a.water || a.river || a.canal || a.stream || '';
+  const place = a.village || a.town || a.hamlet || a.suburb || a.city || a.municipality || '';
+  const parts = [water, place].filter(Boolean).filter((v, i, arr) => arr.indexOf(v) === i);
+  return parts.join(' · ') || d.name || null;
+}

@@ -26,7 +26,7 @@ export function catchRate(s) {
 }
 
 const HEADER = [
-  'sessie_id', 'visser', 'datum', 'start', 'eind', 'duur_uur', 'stek', 'breedtegraad', 'lengtegraad', 'visplek',
+  'sessie_id', 'visser', 'datum', 'start', 'eind', 'duur_uur', 'plek', 'breedtegraad', 'lengtegraad', 'visplek',
   'doelsoorten', 'aascategorie_start', 'aas_start', 'waterhelderheid', 'dagdeel', 'seizoen', 'maand', 'maanfase',
   'temperatuur_c', 'wind_kmu', 'wind_bft', 'windrichting', 'bewolking_pct', 'neerslag_mm', 'luchtdruk_hpa',
   'drukverloop', 'drukverschil_3u_hpa', 'weer', 'pauze_min', 'vissen_in_sessie', 'aanbeten_zonder_vangst', 'vangst_per_uur',
@@ -47,7 +47,7 @@ export function buildCsv(sessions, anglerLabel = () => 'Ik') {
     const pos = s.position || {};
     const base = [
       s.id, anglerLabel(s), dateStr(start), timeStr(start), timeStr(end), num(sessionHours(s), 2),
-      s.spot?.name, pos.lat != null ? pos.lat.toFixed(6).replace('.', ',') : '', pos.lng != null ? pos.lng.toFixed(6).replace('.', ',') : '',
+      s.placeName || s.spot?.name, pos.lat != null ? pos.lat.toFixed(6).replace('.', ',') : '', pos.lng != null ? pos.lng.toFixed(6).replace('.', ',') : '',
       s.platform, (s.targetSpecies || []).join(', '), categoryOf(s.changes?.[0] ? s.changes[0].lure : s.lure) || '', lureLabel(s.changes?.[0] ? s.changes[0].lure : s.lure), s.waterClarity,
       c.dayPart, c.season, c.month, c.moonPhase,
       num(w.tempC), num(w.windKmh, 0), w.windBft ?? '', w.windDir, w.cloudPct ?? '', num(w.precipMm),

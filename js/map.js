@@ -91,7 +91,8 @@ export function watchPosition(onUpdate, onError) {
 // ---------- Kaart-scherm ----------
 
 export class MapScreen {
-  constructor(root, { getSpots, statsFor, onEditSpot, onNewSpot, getCatches = async () => [], onOpenSession = () => {} }) {
+  constructor(root, { getSpots = async () => [], statsFor = () => ({}), onEditSpot = () => {}, onNewSpot = null, getCatches = async () => [], getStarts = async () => [], onOpenSession = () => {} }) {
+    this.getStarts = getStarts;
     this.root = root;
     this.getCatches = getCatches;
     this.onOpenSession = onOpenSession;
@@ -116,7 +117,7 @@ export class MapScreen {
           <button class="map-btn" id="map-layer" type="button" aria-label="Wissel satelliet en kaart">${icon('layers')}<span>Kaart</span></button>
           <button class="map-btn" id="map-locate" type="button" aria-label="Toon mijn locatie">${icon('locate')}</button>
         </div>
-        <button class="fab" id="map-add" type="button">${icon('plus')}<span>Nieuwe stek</span></button>
+        ${this.onNewSpot ? `<button class="fab" id="map-add" type="button">${icon('plus')}<span>Nieuwe stek</span></button>` : ''}
       </div>`;
     const layer = savedLayer();
     this.map = createMap($('#main-map', this.root), { layer });
@@ -128,7 +129,7 @@ export class MapScreen {
       $('#map-layer span', this.root).textContent = now === 'satelliet' ? 'Kaart' : 'Satelliet';
     });
     $('#map-locate', this.root).addEventListener('click', () => this.locate(true));
-    $('#map-add', this.root).addEventListener('click', () => this.onNewSpot());
+    $('#map-add', this.root)?.addEventListener('click', () => this.onNewSpot());
     this.root.addEventListener('click', (e) => {
       const b = e.target.closest('[data-edit-spot]');
       if (b) this.onEditSpot(b.dataset.editSpot);
@@ -145,7 +146,21 @@ export class MapScreen {
     // verversingen geen dubbele stippen opleveren.
     const spots = (await this.getSpots()).filter((s) => !s.archived);
     const catches = await this.getCatches();
+    const starts = await this.getStarts();
     this.markers.clearLayers();
+    // Startplekken van sessies (FL-31)
+    for (const st of starts) {
+      const m = L.marker([st.lat, st.lng], { icon: pinIcon(st.fish > 0 ? 'has-fish' : ''), title: st.title });
+      m.bindPopup(
+        `<div class="pop">
+          <strong>${esc(st.title)}</strong>
+          <div class="pop-stats"><span>${esc(st.when)}</span><span><b>${st.fish}</b> ${st.fish === 1 ? 'vis' : 'vissen'}</span></div>
+          <button type="button" class="btn small" data-open-session="${esc(st.sessionId)}">Bekijk sessie</button>
+        </div>`,
+        { closeButton: false, minWidth: 180 },
+      );
+      this.markers.addLayer(m);
+    }
     for (const s of spots) {
       const st = this.statsFor(s.id);
       const m = L.marker([s.lat, s.lng], { icon: pinIcon(st.fish > 0 ? 'has-fish' : ''), title: s.name });
@@ -177,7 +192,7 @@ export class MapScreen {
       this.markers.addLayer(dot);
     }
     if (fit) {
-      const pts = [...spots.map((s) => [s.lat, s.lng]), ...catches.map((c) => [c.lat, c.lng])];
+      const pts = [...spots.map((s) => [s.lat, s.lng]), ...starts.map((s) => [s.lat, s.lng]), ...catches.map((c) => [c.lat, c.lng])];
       if (pts.length) {
         const b = L.latLngBounds(pts);
         this.map.fitBounds(b.pad(0.3), { maxZoom: 16 });
