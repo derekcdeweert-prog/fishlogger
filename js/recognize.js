@@ -178,3 +178,84 @@ export async function recognizeLure(blob, types, onProgress = () => {}) {
     costUsd,
   };
 }
+
+// ---------- Kunstaas ophalen via een link (FL-32) ----------
+
+const LINK_MODEL = 'claude-haiku-5-5';
+
+function linkTool(types) {
+  return {
+    name: 'kunstaas',
+    description: 'Leg de productgegevens vast van het kunstaas op de opgehaalde productpagina. Roep dit altijd als laatste stap aan.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        gevonden: { type: 'boolean', description: 'false als de pagina niet te lezen was of geen kunstaas-product toont' },
+        categorie: { type: 'string', enum: types, description: 'Categorie die het best past. Shads = paddle tail shads; Dropshot Shads = kleine slanke shads voor dropshot; Softbaits = overige softbaits; Pluggen = crankbaits, wobblers, minnows met lip; Jerkbaits = lipless/glide jerkbaits; Oppervlakte aas = topwater, poppers, walkers.' },
+        merk: { type: 'string', description: 'Merk, bijv. "Westin"' },
+        model: { type: 'string', description: 'Modelnaam zonder merk, maat en kleur, bijv. "Swim Glidebait"' },
+        kleur: { type: 'string', description: 'Kleur of kleurnaam van deze uitvoering. Leeg als de pagina meerdere kleuren toont en niet duidelijk is welke bedoeld is.' },
+        maat_cm: { type: 'number', description: 'Lengte in cm van deze uitvoering' },
+        gewicht_g: { type: 'number', description: 'Gewicht in gram van deze uitvoering' },
+        drijfvermogen: { type: 'string', description: 'Bijv. drijvend, zinkend, suspending. Alleen als vermeld.' },
+        afbeelding_url: { type: 'string', description: 'Volledige https-URL van de hoofdafbeelding van het product, als die in de pagina staat' },
+        meerdere_varianten: { type: 'boolean', description: 'true als de pagina meerdere maten of kleuren aanbiedt en niet zeker is welke bedoeld is' },
+      },
+      required: ['gevonden', 'categorie'],
+    },
+  };
+}
+
+/** Haalt merk, model, kleur, maat, gewicht en afbeelding op van een productpagina (bijv. tackleshop.nl). */
+export async function importFromLink(url, types, onProgress = () => {}) {
+  const key = await getKey();
+  if (!key) throw new RecognizeError('Geen API-sleutel ingesteld.', 'no_key');
+  if (!navigator.onLine) throw new RecognizeError('Geen internet. Vul het aas handmatig in.', 'offline');
+  let u;
+  try { u = new URL(url.trim()); } catch (_) { throw new RecognizeError('Dit is geen geldige link. Kopieer de link van de productpagina en plak hem hier.', 'bad_url'); }
+  if (!/^https?:$/.test(u.protocol)) throw new RecognizeError('Dit is geen geldige link.', 'bad_url');
+
+  const tool = linkTool(types);
+  const tools = [{ type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 2, max_content_tokens: 30000 }, tool];
+  const messages = [{
+    role: 'user',
+    content: `Haal deze productpagina op: ${u.href}\nDit is een pagina van een hengelsportwinkel met kunstaas. Lees merk, model, kleur, lengte, gewicht en de hoofdafbeelding van precies deze uitvoering af (let op kleur- of maatkeuze in de link). Vul daarna het hulpmiddel kunstaas in. Verzin niets: wat niet op de pagina staat laat je leeg.`,
+  }];
+  const usage = { input: 0, output: 0 };
+  const count = (d) => { usage.input += (d.usage?.input_tokens || 0) + (d.usage?.cache_read_input_tokens || 0) + (d.usage?.cache_creation_input_tokens || 0); usage.output += d.usage?.output_tokens || 0; };
+
+  onProgress('Productpagina ophalen…');
+  let data = await callApi(key, { model: LINK_MODEL, max_tokens: 1200, tools, tool_choice: { type: 'auto' }, messages });
+  count(data);
+  let rounds = 0;
+  while (data.stop_reason === 'pause_turn' && rounds < 2) {
+    rounds++;
+    messages.push({ role: 'assistant', content: data.content });
+    data = await callApi(key, { model: LINK_MODEL, max_tokens: 1200, tools, tool_choice: { type: 'auto' }, messages });
+    count(data);
+  }
+  let block = (data.content || []).find((b) => b.type === 'tool_use' && b.name === 'kunstaas');
+  if (!block) {
+    messages.push({ role: 'assistant', content: data.content });
+    messages.push({ role: 'user', content: 'Vul nu het hulpmiddel kunstaas in met wat je op de pagina hebt gevonden.' });
+    data = await callApi(key, { model: LINK_MODEL, max_tokens: 800, tools, tool_choice: { type: 'tool', name: 'kunstaas' }, messages });
+    count(data);
+    block = (data.content || []).find((b) => b.type === 'tool_use' && b.name === 'kunstaas');
+  }
+  if (!block) throw new RecognizeError('De pagina kon niet worden gelezen. Vul het aas handmatig in.', 'error');
+  const r = block.input || {};
+  if (r.gevonden === false) throw new RecognizeError('Op deze pagina is geen kunstaas gevonden, of de winkel was niet bereikbaar. Vul het handmatig in.', 'not_found');
+  const img = typeof r.afbeelding_url === 'string' && /^https:\/\//.test(r.afbeelding_url) ? r.afbeelding_url : '';
+  return {
+    type: types.includes(r.categorie) ? r.categorie : '',
+    name: [r.merk, r.model].map((x) => (x || '').trim()).filter(Boolean).join(' '),
+    color: (r.kleur || '').trim(),
+    sizeCm: typeof r.maat_cm === 'number' && r.maat_cm > 0 ? Math.round(r.maat_cm * 2) / 2 : null,
+    weightG: typeof r.gewicht_g === 'number' && r.gewicht_g > 0 ? Math.round(r.gewicht_g * 2) / 2 : null,
+    action: (r.drijfvermogen || '').trim(),
+    imageUrl: img,
+    variants: !!r.meerdere_varianten,
+    source: u.href,
+    costUsd: (usage.input * 0.1 + usage.output * 0.5) / 1e6,
+  };
+}

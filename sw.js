@@ -1,5 +1,5 @@
 // Service worker: de app werkt ook zonder bereik aan het water.
-const VERSION = 'fl-r3-7';
+const VERSION = 'fl-r3-8';
 const APP_CACHE = `app-${VERSION}`;
 const TILE_CACHE = 'tiles-v1';
 const FONT_CACHE = 'fonts-v1';
@@ -64,6 +64,24 @@ self.addEventListener('fetch', (event) => {
           })
           .catch(() => hit);
         return hit || net;
+      }),
+    );
+    return;
+  }
+
+  // Productafbeeldingen van webshops (FL-32): eerst uit de cache, zodat ze ook zonder bereik te zien zijn.
+  if (url.origin !== self.location.origin && req.destination === 'image') {
+    event.respondWith(
+      caches.open('lure-images-v1').then(async (cache) => {
+        const hit = await cache.match(req);
+        if (hit) return hit;
+        try {
+          const res = await fetch(req);
+          if (res.ok || res.type === 'opaque') cache.put(req, res.clone());
+          return res;
+        } catch (_) {
+          return new Response('', { status: 504 });
+        }
       }),
     );
     return;

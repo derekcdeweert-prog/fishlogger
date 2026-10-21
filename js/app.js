@@ -3,7 +3,7 @@ import * as db from './db.js';
 import { computedConditions, fetchWeather, fetchPlaceName, distanceM, DEFAULT_POS } from './conditions.js';
 import { buildCsv, buildBackup, restoreBackup, saveFile, stamp, sessionHours } from './data-export.js';
 import { MapScreen, openSpotEditor, openPointPicker, createSessionMap, getPosition } from './map.js';
-import { recognizeLure, getKey, setKey, clearKey, getMode, setMode } from './recognize.js';
+import { importFromLink, getKey, setKey, clearKey } from './recognize.js';
 import { FACTORS, MIN_SESSIONS, scope, factorTable, bestCombinations, overall } from './insights.js';
 import {
   esc, $, $$, el, icon, toast, openSheet, confirmButton, chips, wireChips, chipValue, compressPhoto,
@@ -469,7 +469,7 @@ function mountLurePicker(container, selectedId, angler = ME) {
   for (const l of lures) typeUse.set(l.type, (typeUse.get(l.type) || 0) + (usage.get(l.id) || 0));
   const unsorted = state.lures.filter((l) => ownerOf(l) === angler && !l.archived && !categoryOf(l)).length;
   const types = [...typeUse.keys()].sort((a, b) => typeUse.get(b) - typeUse.get(a) || LURE_TYPES.indexOf(a) - LURE_TYPES.indexOf(b));
-  const firstOfType = (t) => lures.find((l) => l.type === t && l.photoId) || lures.find((l) => l.type === t);
+  const firstOfType = (t) => lures.find((l) => l.type === t && (l.photoId || l.imageUrl)) || lures.find((l) => l.type === t);
   let type = picker.value ? lureById(picker.value).type : types[0];
 
   const sizeText = (l) => (l.sizeCm ? `${fmtNum(l.sizeCm, l.sizeCm % 1 ? 1 : 0)} cm` : '');
@@ -482,7 +482,7 @@ function mountLurePicker(container, selectedId, angler = ME) {
         ${types.map((t) => {
           const l = firstOfType(t);
           return `<button type="button" class="type-card ${t === type ? 'on' : ''}" data-type="${esc(t)}" role="radio" aria-checked="${t === type}">
-            ${l && l.photoId ? `<img data-photo="${esc(l.photoId)}" alt="">` : `<span class="type-ini" aria-hidden="true">${esc(t.slice(0, 1))}</span>`}
+            ${lureImg(l) || `<span class="type-ini" aria-hidden="true">${esc(t.slice(0, 1))}</span>`}
             <span>${esc(t)}</span>
           </button>`;
         }).join('')}
@@ -494,7 +494,7 @@ function mountLurePicker(container, selectedId, angler = ME) {
       ${type === null ? `<p class="muted picker-note">Je start zonder aas. Kies later via Wissel.</p>` : `
       <div class="carousel lure-carousel" role="radiogroup" aria-label="${esc(type)}">
         ${inType.map((l) => `<button type="button" class="lure-card ${l.id === picker.value ? 'on' : ''}" data-pick="${esc(l.id)}" role="radio" aria-checked="${l.id === picker.value}">
-          ${l.photoId ? `<img data-photo="${esc(l.photoId)}" alt="">` : `<span class="lure-ph" aria-hidden="true">${esc((l.color || l.name || '?').slice(0, 1).toUpperCase())}</span>`}
+          ${lureImg(l) || `<span class="lure-ph" aria-hidden="true">${esc((l.color || l.name || '?').slice(0, 1).toUpperCase())}</span>`}
           <span class="lure-card-name">${esc(l.name || l.type)}</span>
           <span class="lure-card-sub">${esc([l.color, sizeText(l)].filter(Boolean).join(' · '))}</span>
         </button>`).join('')}
@@ -1179,6 +1179,13 @@ function usedInSession(s) {
 }
 
 /** Naam of model met de categorie erbij, bijv. "Westin Swim (Jerkbaits)", zodat gelijke merken uit elkaar te houden zijn. */
+/** Afbeelding van een aas: eigen foto, anders de productafbeelding van de webshop (FL-32). */
+function lureImg(l, cls = '') {
+  if (l && l.photoId) return `<img class="${cls}" data-photo="${esc(l.photoId)}" alt="">`;
+  if (l && l.imageUrl) return `<img class="${cls}" src="${esc(l.imageUrl)}" alt="" referrerpolicy="no-referrer" loading="lazy">`;
+  return '';
+}
+
 function lureShort(l) {
   if (!l) return 'geen aas';
   const cat = categoryOf(l);
@@ -1538,13 +1545,13 @@ function renderTackle() {
       <section class="lure-group">
         <h2 class="section-title">${esc(t)}</h2>
         ${ls.map((l) => `<button type="button" class="lure-row ${l.archived ? 'archived' : ''}" data-lure="${esc(l.id)}">
-          ${l.photoId ? `<img class="swatch photo" data-photo="${esc(l.photoId)}" alt="">` : `<span class="swatch" aria-hidden="true">${esc((l.color || l.type || '?').slice(0, 1).toUpperCase())}</span>`}
+          ${lureImg(l, 'swatch photo') || `<span class="swatch" aria-hidden="true">${esc((l.color || l.type || '?').slice(0, 1).toUpperCase())}</span>`}
           <span class="lure-main"><strong>${esc(l.name || l.type)}</strong><span class="muted">${esc([l.color, l.sizeCm ? `${fmtNum(l.sizeCm, l.sizeCm % 1 ? 1 : 0)} cm` : '', l.weightG ? `${fmtNum(l.weightG, l.weightG % 1 ? 1 : 0)} g` : '', l.action].filter(Boolean).join(' · '))}${l.archived ? ' · verborgen' : ''}</span></span>
         </button>`).join('')}
       </section>`).join('') : `<div class="card empty-state"><p><strong>Nog geen kunstaas.</strong></p><p class="muted">Voeg je jerkbaits, shads, pluggen en ander kunstaas toe. Bij een sessie of vangst kies je ze daarna met één tik.</p></div>`}
     ${hiddenCount ? `<button class="btn ghost small" id="toggle-hidden" type="button">${showHidden ? 'Verberg' : 'Toon'} verborgen aas (${hiddenCount})</button>` : ''}
     <section class="card">
-      <h2 class="section-title">Kunstaas herkennen</h2>
+      <h2 class="section-title">Kunstaas ophalen via link</h2>
       <p id="recog-state" class="muted"></p>
       <button class="btn small" type="button" id="recog-settings">${icon('camera')} Instellingen</button>
     </section>`;
@@ -1554,9 +1561,9 @@ function renderTackle() {
   $('#add-angler', root).addEventListener('click', () => openAnglerSheet());
   $('#rename-angler', root)?.addEventListener('click', () => openAnglerSheet(state.anglers.find((a) => a.id === owner)));
   $('#recog-settings', root).addEventListener('click', () => openKeySheet(() => renderTackle()));
-  Promise.all([getKey(), getMode()]).then(([k, m]) => {
+  getKey().then((k) => {
     const p = $('#recog-state', root);
-    if (p) p.textContent = !k ? 'Uit. Je vult kunstaas zelf in.' : m === 'snel' ? 'Aan, snelle stand: alleen de foto, zonder internet.' : 'Aan, grondige stand: de foto wordt bekeken en het product wordt op internet opgezocht.';
+    if (p) p.textContent = k ? 'Aan. Plak bij nieuw kunstaas de link van de productpagina, dan worden merk, model, kleur, maat en gewicht ingevuld.' : 'Uit. Je vult kunstaas zelf in. Met een eigen Claude API-sleutel kun je kunstaas ophalen via een link naar tackleshop.nl.';
   });
   fillPhotos(root);
   $$('[data-lure]', root).forEach((b) => b.addEventListener('click', () => openLureSheet(lureById(b.dataset.lure))));
@@ -1569,12 +1576,11 @@ function renderTackle() {
 /** Instellen van de eigen Claude API-sleutel voor het herkennen van kunstaas (FL-20). */
 async function openKeySheet(onDone) {
   const current = await getKey();
-  const mode = await getMode();
   const masked = current ? `${current.slice(0, 10)}…${current.slice(-4)}` : '';
   const body = el(`<form class="form" novalidate>
-    <p>Fish Logger kan op een foto zien welk kunstaas het is: type, kleur, maat en soms merk en model. Daarvoor gaat de foto naar Claude van Anthropic.</p>
+    <p>Fish Logger kan de gegevens van een kunstaas ophalen via de link naar de productpagina, bijvoorbeeld op tackleshop.nl: merk, model, kleur, maat, gewicht en afbeelding. Claude van Anthropic leest daarvoor de pagina.</p>
     <ol class="steps">
-      <li>Maak een account op <a href="https://platform.claude.com/" target="_blank" rel="noopener">platform.claude.com</a> en zet er een klein tegoed op (een paar euro is voor duizenden foto's genoeg).</li>
+      <li>Maak een account op <a href="https://platform.claude.com/" target="_blank" rel="noopener">platform.claude.com</a> en zet er een klein tegoed op (een paar euro is voor duizenden links genoeg).</li>
       <li>Maak een sleutel aan via <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">Settings › API keys</a> en kopieer hem. Hij begint met <code>sk-ant-</code> en wordt maar één keer getoond.</li>
       <li>Plak de sleutel hieronder.</li>
     </ol>
@@ -1582,15 +1588,14 @@ async function openKeySheet(onDone) {
       <input id="api-key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${current ? esc(masked) : 'sk-ant-…'}">
     </label>
     <p class="hint">De sleutel blijft alleen op deze iPhone. Hij gaat niet mee in je back-up en staat niet op GitHub.</p>
-    <div class="field"><span class="label">Hoe grondig</span>${chips('mode', [{ value: 'grondig', label: 'Grondig: product opzoeken' }, { value: 'snel', label: 'Snel: alleen de foto' }], mode)}</div>
-    <p class="hint"><b>Grondig</b> gebruikt Claude Sonnet en zoekt merk, model, maat en gewicht op internet op. Dat kost een paar cent per foto. <b>Snel</b> gebruikt Claude Haiku zonder internet: minder dan een tiende cent, maar merk en gewicht zijn vaak onbekend. Na elke herkenning zie je wat het kostte.</p>
+    <p class="hint">Ophalen gebruikt Claude Haiku en kost ongeveer een tiende cent per link.</p>
     <div class="actions">
       ${current ? `<button type="button" class="btn ghost danger" id="key-remove">Sleutel verwijderen</button>` : ''}
       <button type="submit" class="btn primary">Opslaan</button>
     </div>
   </form>`);
   wireChips(body);
-  const sheet = openSheet({ title: 'Kunstaas herkennen', body });
+  const sheet = openSheet({ title: 'Kunstaas ophalen via link', body });
   $('#key-remove', body)?.addEventListener('click', async () => {
     await clearKey();
     sheet.close();
@@ -1600,7 +1605,6 @@ async function openKeySheet(onDone) {
   body.addEventListener('submit', async (e) => {
     e.preventDefault();
     const v = $('#api-key', body).value.trim();
-    await setMode(chipValue(body, 'mode') || 'grondig');
     if (!v) { if (current) { sheet.close(); toast('Opgeslagen'); onDone && onDone(); return; } toast('Plak eerst je API-sleutel.', 'warn'); return; }
     if (!v.startsWith('sk-ant-')) { toast('Een Claude API-sleutel begint met sk-ant-.', 'warn'); return; }
     await setKey(v);
@@ -1635,14 +1639,23 @@ function openAnglerSheet(angler = null) {
 function openLureSheet(lure = null, owner = ME) {
   const l = lure || {};
   const body = el(`<form class="form" novalidate>
+    <section class="link-import">
+      <label class="field"><span class="label">Via link (bijv. tackleshop.nl)</span>
+        <span class="link-row">
+          <input id="lure-link" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Plak de link van de productpagina" value="${esc(l.sourceUrl || '')}">
+          <button type="button" class="btn primary small" id="lure-fetch">Ophalen</button>
+        </span>
+      </label>
+      <p class="hint small">Open het aas in Safari op tackleshop.nl, kies de juiste kleur en maat, tik op Deel › Kopieer en plak de link hier.</p>
+      <p class="recog-status" aria-live="polite"></p>
+    </section>
+    <p class="divider-label"><span>of vul handmatig in</span></p>
     <div class="field">
       <span class="label">Foto</span>
       <div class="lure-photo">
-        <img class="lure-photo-img" alt="Foto van het kunstaas" ${l.photoId ? `data-photo="${esc(l.photoId)}"` : 'hidden'}>
+        <span class="lure-photo-holder">${lureImg(l, 'lure-photo-img')}</span>
         <div class="lure-photo-side">
-          <label class="btn ${l.photoId ? 'ghost small' : 'primary'}" for="lure-photo-input">${icon('camera')} ${l.photoId ? 'Nieuwe foto' : 'Foto maken en herkennen'}</label>
-          <p class="recog-status" aria-live="polite"></p>
-          <p class="hint small">Tip: fotografeer het aas van opzij, of de verpakking. Een zichtbaar logo of label helpt het meest.</p>
+          <label class="btn ghost small" for="lure-photo-input">${icon('camera')} ${l.photoId || l.imageUrl ? 'Andere foto' : 'Foto maken of kiezen'}</label>
         </div>
       </div>
       <input id="lure-photo-input" type="file" accept="image/*" hidden>
@@ -1667,10 +1680,14 @@ function openLureSheet(lure = null, owner = ME) {
   const status = $('.recog-status', body);
   const setStatus = (html, kind = '') => { status.innerHTML = html; status.className = `recog-status ${kind}`; };
 
+  const showImg = (html) => { $('.lure-photo-holder', body).innerHTML = html; fillPhotos(body); };
+  let found = null;
+  let imageUrl = l.imageUrl || '';
+
   const applyResult = (r) => {
     // Bij nieuw aas alles invullen; bij bestaand aas alleen lege velden, zodat je eigen invoer blijft staan.
     const fill = (sel, val) => { const inp = $(sel, body); if (val != null && val !== '' && (!lure || !inp.value.trim())) inp.value = String(val).replace('.', ','); };
-    if (!lure || !l.type) {
+    if (r.type && (!lure || !categoryOf(l))) {
       $$('.chips[data-name="type"] .chip', body).forEach((c) => { const on = c.dataset.value === r.type; c.classList.toggle('on', on); c.setAttribute('aria-pressed', String(on)); });
     }
     fill('#lure-name', r.name);
@@ -1680,30 +1697,45 @@ function openLureSheet(lure = null, owner = ME) {
     found = r;
   };
 
-  let found = null;
-  const runRecognition = async () => {
-    if (!newPhoto) return;
-    setStatus('<span class="spinner" aria-hidden="true"></span> Herkennen…', 'busy');
+  // FL-32: productgegevens ophalen via een link naar de webshop.
+  const runImport = async () => {
+    const url = $('#lure-link', body).value.trim();
+    if (!url) { $('#lure-link', body).focus(); toast('Plak eerst de link van de productpagina.', 'warn'); return; }
+    const btn = $('#lure-fetch', body);
+    btn.disabled = true;
+    setStatus('<span class="spinner" aria-hidden="true"></span> Productpagina ophalen…', 'busy');
     try {
-      const r = await recognizeLure(newPhoto, LURE_TYPES, (msg) => setStatus(`<span class="spinner" aria-hidden="true"></span> ${esc(msg)}`, 'busy'));
+      const r = await importFromLink(url, LURE_TYPES, (msg) => setStatus(`<span class="spinner" aria-hidden="true"></span> ${esc(msg)}`, 'busy'));
       applyResult(r);
-      const zeker = { hoog: 'vrij zeker', middel: 'redelijk zeker', laag: 'niet zeker' }[r.confidence] || '';
-      let host = '';
-      try { host = r.source ? new URL(r.source).hostname.replace(/^www\./, '') : ''; } catch (_) { host = ''; }
-      setStatus(`<b>Herkend:</b> ${esc([r.type, r.name, r.color].filter(Boolean).join(' · '))}${zeker ? ` (${zeker})` : ''}.
-        ${r.note ? `<span class="recog-note">${esc(r.note)}</span>` : ''}
-        ${host ? `<span class="recog-note">Gegevens van <a href="${esc(r.source)}" target="_blank" rel="noopener">${esc(host)}</a>.</span>` : ''}
-        <span class="recog-note">Controleer de velden. Kosten ≈ $${r.costUsd.toFixed(3).replace('.', ',')}${r.searches ? ` (${r.searches} ${r.searches === 1 ? 'zoekopdracht' : 'zoekopdrachten'})` : ''}.</span>`, 'good');
+      if (r.imageUrl && !newPhoto && !l.photoId) {
+        imageUrl = r.imageUrl;
+        // Lukt het om de afbeelding op te slaan, dan werkt hij ook zonder bereik; anders tonen we hem vanaf de webshop.
+        try {
+          const res = await fetch(r.imageUrl, { mode: 'cors' });
+          if (res.ok) { newPhoto = await compressPhoto(await res.blob(), 900); imageUrl = ''; }
+        } catch (_) { /* geen toestemming van de webshop: link gebruiken */ }
+        showImg(newPhoto ? `<img class="lure-photo-img" src="${URL.createObjectURL(newPhoto)}" alt="">` : `<img class="lure-photo-img" src="${esc(imageUrl)}" alt="" referrerpolicy="no-referrer">`);
+        $('label[for="lure-photo-input"]', body).innerHTML = `${icon('camera')} Andere foto`;
+      }
+      const missing = [!r.color && 'kleur', !r.sizeCm && 'maat', !r.weightG && 'gewicht', !r.type && 'categorie'].filter(Boolean);
+      setStatus(`<b>Opgehaald:</b> ${esc([r.type, r.name, r.color].filter(Boolean).join(' · '))}.
+        ${r.variants ? '<span class="recog-note">Deze pagina heeft meerdere kleuren of maten. Controleer welke je hebt.</span>' : ''}
+        ${missing.length ? `<span class="recog-note">Niet gevonden: ${missing.join(', ')}. Vul dat hieronder aan.</span>` : ''}
+        <span class="recog-note">Controleer de velden en tik op ${lure ? 'Opslaan' : 'Toevoegen'}.</span>`, 'good');
     } catch (err) {
       if (err.code === 'no_key') {
-        setStatus('Foto staat klaar. Automatisch herkennen kan met een eigen Claude API-sleutel. <button type="button" class="link-btn" id="recog-setup">Instellen</button> of vul hieronder zelf in.', '');
-        $('#recog-setup', body).addEventListener('click', () => openKeySheet(runRecognition));
+        setStatus('Ophalen via een link kan met een eigen Claude API-sleutel. <button type="button" class="link-btn" id="recog-setup">Instellen</button>, of vul hieronder zelf in.', '');
+        $('#recog-setup', body).addEventListener('click', () => openKeySheet(runImport));
       } else {
-        setStatus(`${esc(err.message || 'Herkennen mislukt.')}${err.code === 'busy' || err.code === 'offline' ? ' <button type="button" class="link-btn" id="recog-retry">Opnieuw proberen</button>' : ''}`, 'warn');
-        $('#recog-retry', body)?.addEventListener('click', runRecognition);
+        setStatus(`${esc(err.message || 'Ophalen mislukt.')}${err.code === 'busy' || err.code === 'offline' ? ' <button type="button" class="link-btn" id="recog-retry">Opnieuw proberen</button>' : ''}`, 'warn');
+        $('#recog-retry', body)?.addEventListener('click', runImport);
       }
+    } finally {
+      btn.disabled = false;
     }
   };
+  $('#lure-fetch', body).addEventListener('click', runImport);
+  $('#lure-link', body).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); runImport(); } });
 
   $('#lure-photo-input', body).addEventListener('change', async (e) => {
     const file = e.target.files && e.target.files[0];
@@ -1715,13 +1747,9 @@ function openLureSheet(lure = null, owner = ME) {
       setStatus(esc(err.message), 'warn');
       return;
     }
-    const img = $('.lure-photo-img', body);
-    img.src = URL.createObjectURL(newPhoto);
-    img.hidden = false;
-    const btn = $('label[for="lure-photo-input"]', body);
-    btn.className = 'btn ghost small';
-    btn.innerHTML = `${icon('camera')} Andere foto`;
-    runRecognition();
+    imageUrl = '';
+    showImg(`<img class="lure-photo-img" src="${URL.createObjectURL(newPhoto)}" alt="">`);
+    $('label[for="lure-photo-input"]', body).innerHTML = `${icon('camera')} Andere foto`;
   });
 
   const num = (id) => { const v = Number($(id, body).value.trim().replace(',', '.')); return $(id, body).value.trim() && Number.isFinite(v) && v > 0 ? v : null; };
@@ -1735,6 +1763,7 @@ function openLureSheet(lure = null, owner = ME) {
       sizeCm: num('#lure-size'),
       weightG: num('#lure-weight'),
       ...(found ? { action: found.action || l.action || '', sourceUrl: found.source || l.sourceUrl || '' } : {}),
+      imageUrl: newPhoto ? '' : imageUrl,
       archived: l.archived || false,
       owner: lure ? l.owner : owner === ME ? undefined : owner,
       createdAt: l.createdAt || new Date().toISOString(),
