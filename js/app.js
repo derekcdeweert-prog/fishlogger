@@ -2,7 +2,7 @@
 import * as db from './db.js';
 import { computedConditions, fetchWeather, fetchPlaceName, distanceM, DEFAULT_POS } from './conditions.js';
 import { buildCsv, buildBackup, restoreBackup, saveFile, stamp, sessionHours } from './data-export.js';
-import { MapScreen, openSpotEditor, openPointPicker, createSessionMap, getPosition } from './map.js';
+import { MapScreen, openSpotEditor, openPointPicker, createSessionMap, getPosition, watchPosition } from './map.js';
 import { importFromLink, getKey, setKey, clearKey } from './recognize.js';
 import { FACTORS, MIN_SESSIONS, scope, factorTable, bestCombinations, overall } from './insights.js';
 import {
@@ -197,6 +197,7 @@ function setTab(tab) {
 }
 
 function render() {
+  syncGpsWatch();
   if (state.tab === 'vissen') renderVissen();
   if (state.tab === 'kaart') {
     mapScreen.mount();
@@ -210,6 +211,7 @@ function render() {
 // ---------- Vissen ----------
 
 function renderVissen() {
+  syncGpsWatch();
   const root = $('#screen-vissen');
   const s = active();
   if (!s) return renderIdle(root);
@@ -348,6 +350,78 @@ function openJoinSheet(host, angler) {
   });
 }
 
+// ----- Plek tijdens een sessie -----
+// Een misser of wissel is één tik; daarna gaat de telefoon vaak meteen weg en stopt Safari de GPS.
+// Daarom volgt de app de GPS zolang er een sessie loopt, zodat er bij een tik direct een plek is.
+
+let gpsFix = null; // { lat, lng, accuracy, t }
+let stopGpsWatch = null;
+
+const gpsWaiters = [];
+
+function syncGpsWatch() {
+  const want = actives().length > 0 && document.visibilityState !== 'hidden';
+  if (want && !stopGpsWatch) {
+    stopGpsWatch = watchPosition((p) => {
+      gpsFix = { ...p, t: Date.now() };
+      gpsWaiters.splice(0).forEach((w) => w(p));
+    }, () => {});
+  } else if (!want && stopGpsWatch) {
+    stopGpsWatch();
+    stopGpsWatch = null;
+  }
+}
+
+/**
+ * Een verse GPS-meting: de eerste van een losse meting en de volgende update van de volger.
+ * Een plek van de volger van hooguit 10 seconden oud telt direct.
+ */
+function gpsNow({ timeout = 20000 } = {}) {
+  if (fixAge() < 10e3) return Promise.resolve({ lat: gpsFix.lat, lng: gpsFix.lng, accuracy: gpsFix.accuracy });
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (p) => { if (!done) { done = true; resolve(p); } };
+    gpsWaiters.push(finish);
+    getPosition({ timeout, maximumAge: 0 })
+      .then((p) => { gpsFix = { ...p, t: Date.now() }; finish(p); })
+      .catch((e) => {
+        // Zonder volger komt er niets meer; met volger nog even wachten op een update.
+        setTimeout(() => {
+          const i = gpsWaiters.indexOf(finish);
+          if (i >= 0) gpsWaiters.splice(i, 1);
+          if (!done) { done = true; reject(e); }
+        }, stopGpsWatch ? 5000 : 0);
+      });
+  });
+}
+
+const fixAge = () => (gpsFix ? Date.now() - gpsFix.t : Infinity);
+const asPos = (p, extra = {}) => ({ lat: p.lat, lng: p.lng, accuracy: p.accuracy, ...extra });
+
+/** De laatst bekende plek binnen de sessie (vangst, misser, wissel of start). */
+function lastKnownPos(s) {
+  const pts = [
+    ...(s.catches || []), ...(s.bites || []), ...(s.changes || []), ...(s.waterChanges || []),
+  ].filter((x) => x.position && x.at).sort((a, b) => b.at.localeCompare(a.at));
+  if (pts.length) return pts[0].position;
+  return s.position || (s.spot ? { lat: s.spot.lat, lng: s.spot.lng } : null);
+}
+
+/**
+ * Zet direct een plek op `item` (uit de GPS-volger, anders de laatst bekende plek) en
+ * vervangt die door een verse GPS-meting zodra die binnen is.
+ */
+function placeNow(s, item) {
+  if (fixAge() < 2 * 60e3) item.position = asPos(gpsFix);
+  else {
+    const last = lastKnownPos(s);
+    if (last) item.position = { lat: last.lat, lng: last.lng, accuracy: last.accuracy, approx: true };
+  }
+  return gpsNow()
+    .then((p) => asPos(p))
+    .catch(() => (fixAge() < 30 * 60e3 ? asPos(gpsFix) : null));
+}
+
 // ----- Waterhelderheid wijzigen (FL-33) -----
 
 /** Legt een nieuwe waterhelderheid vast; geldt ook voor wie in dezelfde groep meevist. */
@@ -356,9 +430,11 @@ async function setWater(s, clarity) {
   const group = actives().filter((x) => x.id === s.id || (s.groupId && x.groupId === s.groupId));
   const at = new Date().toISOString();
   const added = [];
+  const fresh = [];
   for (const x of group) {
     if (!x.waterChanges || !x.waterChanges.length) x.waterChanges = [{ at: x.startedAt, clarity: x.waterClarity }];
     const entry = { id: db.uid(), at, clarity, position: null, previous: x.waterClarity };
+    fresh.push(placeNow(x, entry));
     x.waterChanges.push(entry);
     x.waterClarity = clarity;
     added.push([x, entry]);
@@ -376,14 +452,13 @@ async function setWater(s, clarity) {
       render();
     },
   });
-  getPosition({ timeout: 20000, maximumAge: 0 })
-    .then(async (p) => {
-      for (const [x, entry] of added) {
-        const saved = (x.waterChanges || []).find((w) => w.id === entry.id);
-        if (saved) { saved.position = { lat: p.lat, lng: p.lng, accuracy: p.accuracy }; await saveSession(x); }
-      }
-    })
-    .catch(() => {});
+  Promise.resolve(fresh[0]).then(async (p) => {
+    if (!p) return;
+    for (const [x, entry] of added) {
+      const saved = (x.waterChanges || []).find((w) => w.id === entry.id);
+      if (saved) { saved.position = p; await saveSession(x); }
+    }
+  });
 }
 
 // ----- Pauzeren (FL-29) -----
@@ -415,6 +490,7 @@ async function resumeSession(s) {
 /** Telt een aanbeet zonder vangst met één tik: tijd en aas gaan mee, de plek volgt op de achtergrond. */
 async function addBite(s) {
   const bite = { id: db.uid(), at: new Date().toISOString(), lureId: s.lureId, lure: s.lure, position: null };
+  const fresh = placeNow(s, bite);
   s.bites = [...(s.bites || []), bite];
   await saveSession(s);
   if (navigator.vibrate) { try { navigator.vibrate(15); } catch (_) { /* geen trilling */ } }
@@ -428,14 +504,12 @@ async function addBite(s) {
       render();
     },
   });
-  getPosition({ timeout: 20000, maximumAge: 0 })
-    .then(async (p) => {
-      const saved = (s.bites || []).find((b) => b.id === bite.id);
-      if (!saved) return;
-      saved.position = { lat: p.lat, lng: p.lng, accuracy: p.accuracy };
-      await saveSession(s);
-    })
-    .catch(() => {});
+  fresh.then(async (p) => {
+    const saved = (s.bites || []).find((b) => b.id === bite.id);
+    if (!saved || !p) return;
+    saved.position = p;
+    await saveSession(s);
+  });
 }
 
 function catchRow(f) {
@@ -636,7 +710,7 @@ function openStartSheet() {
     else if (!gpsDone) t.innerHTML = '<span class="spinner" aria-hidden="true"></span> Locatie bepalen…';
     else t.textContent = 'Geen GPS. Kies je plek op de kaart.';
   };
-  getPosition({ timeout: 15000, maximumAge: 0 })
+  gpsNow({ timeout: 15000 })
     .then((p) => { gps = p; })
     .catch(() => {})
     .finally(() => { gpsDone = true; if (document.body.contains(body)) showPlace(); });
@@ -727,6 +801,7 @@ function openRigSheet(s) {
     s.lureId = lurePicker.value || null;
     s.lure = lureSnap(lureById(s.lureId));
     const change = { id: db.uid(), at: new Date().toISOString(), lureId: s.lureId, lure: s.lure, position: null };
+    const fresh = placeNow(s, change);
     s.changes = [...(s.changes || []), change];
     state.last = { ...state.last, lureByAngler: { ...(state.last.lureByAngler || {}), [anglerOf(s)]: s.lureId }, ...(anglerOf(s) === ME ? { lureId: s.lureId } : {}) };
     await db.setSetting('lastChoices', state.last);
@@ -734,14 +809,12 @@ function openRigSheet(s) {
     sheet.close();
     render();
     // FL-25: plek van de wissel op de achtergrond vastleggen.
-    getPosition({ timeout: 20000, maximumAge: 0 })
-      .then(async (p) => {
-        const saved = (s.changes || []).find((x) => x.id === change.id);
-        if (!saved) return;
-        saved.position = { lat: p.lat, lng: p.lng, accuracy: p.accuracy };
-        await saveSession(s);
-      })
-      .catch(() => {});
+    fresh.then(async (p) => {
+      const saved = (s.changes || []).find((x) => x.id === change.id);
+      if (!saved || !p) return;
+      saved.position = p;
+      await saveSession(s);
+    });
   });
 }
 
@@ -754,7 +827,7 @@ function openCatchSheet(s, existing = null, onSaved = null) {
   const at = f.at ? new Date(f.at) : s.endedAt ? new Date(s.startedAt) : new Date();
   // FL-22: bij een nieuwe vangst tijdens een lopende sessie wordt de plek op de achtergrond bepaald.
   const live = !existing && !s.endedAt;
-  let place = f.position || null;
+  let place = f.position || (live && fixAge() < 2 * 60e3 ? { ...asPos(gpsFix), byHand: false } : null);
   let placeTouched = false;
   let gpsPending = live;
   const body = el(`<form class="form" novalidate>
@@ -801,7 +874,7 @@ function openCatchSheet(s, existing = null, onSaved = null) {
   };
   showPlace();
   const gpsPromise = live
-    ? getPosition({ timeout: 20000, maximumAge: 0 })
+    ? gpsNow({ timeout: 20000 })
         .then((p) => ({ lat: p.lat, lng: p.lng, accuracy: p.accuracy, byHand: false }))
         .catch(() => null)
         .then((p) => {
@@ -1277,6 +1350,7 @@ function openSessionDetail(id) {
       mapItems.start ? `<span class="lg"><i class="lg-pin"></i>Start</span>` : '',
       mapItems.catches.length ? `<span class="lg"><i class="lg-catch"></i>${mapItems.catches.length} ${mapItems.catches.length === 1 ? 'vangst' : 'vangsten'}</span>` : '',
       mapItems.bites.length ? `<span class="lg"><i class="lg-bite"></i>${mapItems.bites.length} ${mapItems.bites.length === 1 ? 'misser' : 'missers'}</span>` : '',
+      (s.bites || []).length > mapItems.bites.length ? `<span class="lg muted">${s.bites.length - mapItems.bites.length} ${s.bites.length - mapItems.bites.length === 1 ? 'misser' : 'missers'} zonder plek</span>` : '',
       mapItems.switches.length ? `<span class="lg"><i class="lg-switch"></i>${mapItems.switches.length} ${mapItems.switches.length === 1 ? 'wissel' : 'wissels'}</span>` : '',
     ].join('');
     sheet.body.innerHTML = `<div class="detail">
@@ -1411,7 +1485,7 @@ function openSessionForm(existing = null, onSaved = null) {
     $('#sf-place', body).textContent = where ? (whereChanged ? 'Op de kaart gekozen' : s ? placeOf(s) : `Je huidige locatie${where.accuracy ? ` (± ${where.accuracy} m)` : ''}`) : 'Kies de plek op de kaart';
   };
   showWhere();
-  if (!where) getPosition({ timeout: 10000 }).then((p) => { if (!where) { where = p; showWhere(); } }).catch(() => {});
+  if (!where) gpsNow({ timeout: 10000 }).then((p) => { if (!where) { where = p; showWhere(); } }).catch(() => {});
   $('#sf-place-map', body).addEventListener('click', () => {
     openPointPicker({
       title: 'Waar viste je?',
@@ -1900,6 +1974,7 @@ async function boot() {
   backfillWeather();
   window.addEventListener('online', backfillWeather);
   document.addEventListener('visibilitychange', () => {
+    syncGpsWatch();
     if (document.visibilityState === 'visible') { backfillWeather(); if (state.tab === 'vissen') renderVissen(); }
   });
   setInterval(() => {
