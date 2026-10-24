@@ -2,6 +2,7 @@
 import { dayPart, DAY_PARTS, SEASONS, DEFAULT_POS } from './conditions.js';
 import { LURE_TYPES, categoryOf, isFlySession } from './lure-types.js';
 import { activeHours } from './session-time.js';
+import { waterHours, waterAt, waterMost } from './water.js';
 
 export const MIN_SESSIONS = 5; // minder sessies = te weinig data voor een conclusie
 const COMBO_MIN_SESSIONS = 3;
@@ -56,7 +57,7 @@ export const FACTORS = [
   { key: 'windDir', label: 'Windrichting', kind: 'session', order: ['N', 'NO', 'O', 'ZO', 'Z', 'ZW', 'W', 'NW'], get: (s) => (s.weather?.status === 'ok' ? s.weather.windDir : null) },
   { key: 'cloud', label: 'Bewolking', kind: 'session', order: ['Zonnig', 'Half bewolkt', 'Bewolkt'], get: (s) => cloudGroup(s.weather) },
   { key: 'moon', label: 'Maan', kind: 'session', order: ['Nieuwe maan', 'Wassend', 'Volle maan', 'Afnemend'], get: (s) => moonGroup(s.conditions) },
-  { key: 'water', label: 'Waterhelderheid', kind: 'session', order: ['Helder', 'Licht troebel', 'Troebel'], get: (s) => s.waterClarity },
+  { key: 'water', label: 'Waterhelderheid', kind: 'water', order: ['Helder', 'Licht troebel', 'Troebel'] },
   { key: 'platform', label: 'Vanaf', kind: 'session', order: ['Kant', 'Wadend', 'Boot'], get: (s) => s.platform },
   { key: 'spot', label: 'Plek', kind: 'session', get: (s) => s.placeName || s.spot?.name },
   { key: 'category', label: 'Aascategorie', kind: 'segment', field: 'category', order: LURE_TYPES },
@@ -130,6 +131,15 @@ export function factorTable(factor, sessions, fishOf) {
       r.fish += fish.length;
       r.bites += (s.bites || []).length;
       r.sessions.add(s.id);
+    } else if (factor.kind === 'water') {
+      // FL-33: waterhelderheid kan per stuk water verschillen; tel per periode en per vangstmoment.
+      for (const [v, h] of waterHours(s)) {
+        const r = row(v);
+        r.hours += h;
+        r.sessions.add(s.id);
+      }
+      for (const f of fish) { const v = waterAt(s, f.at); if (v) row(v).fish += 1; }
+      for (const a of s.bites || []) { const v = waterAt(s, a.at); if (v) row(v).bites += 1; }
     } else if (factor.kind === 'slice') {
       for (const [v, h] of dayPartHours(s)) {
         const r = row(v);
@@ -171,6 +181,7 @@ const COMBO_FACTORS = [
   { label: 'dagdeel', get: (s) => s.conditions?.dayPart },
   ...FACTORS.filter((f) => f.kind === 'session' && f.key !== 'windDir').map((f) => ({ label: f.label.toLowerCase(), get: f.get, key: f.key })),
   { label: 'aascategorie', get: (s) => categoryOf(s.changes && s.changes[0] ? s.changes[0].lure : s.lure) },
+  { label: 'waterhelderheid', get: (s) => waterMost(s) },
 ];
 
 function* combinations(arr, k, start = 0, prefix = []) {

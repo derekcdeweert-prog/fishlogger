@@ -13,7 +13,7 @@ import {
 export const SPECIES = ['Snoek', 'Snoekbaars', 'Baars', 'Forel', 'Kopvoorn', 'Ruisvoorn', 'Winde', 'Overig'];
 import { LURE_TYPES, LEGACY_TYPES, FLY_TYPE, categoryOf, isFlySession } from './lure-types.js';
 import { activeHours, pauseHours, isPaused, clampPauses } from './session-time.js';
-const WATER = ['Helder', 'Licht troebel', 'Troebel'];
+import { WATER, waterTimeline } from './water.js';
 const PLATFORMS = ['Kant', 'Wadend', 'Boot'];
 
 const state = {
@@ -241,7 +241,15 @@ function renderVissen() {
         <div><span class="big" id="live-rate">${sRate(s)}</span><span class="lbl">per uur</span></div>
       </div>
       ${weatherHtml(s.weather, { compact: true })}
-      <p class="cond-line">${esc(c.dayPart)} · ${esc(c.season)} · ${esc(c.moonPhase)} · ${esc(s.platform)} · water ${esc((s.waterClarity || '').toLowerCase())}</p>
+      <p class="cond-line">${esc(c.dayPart)} · ${esc(c.season)} · ${esc(c.moonPhase)} · ${esc(s.platform)}</p>
+    </section>
+
+    <section class="card water-card">
+      <p class="eyebrow">Water hier</p>
+      <div class="water-seg" role="radiogroup" aria-label="Waterhelderheid">
+        ${WATER.map((w) => `<button type="button" class="water-opt ${w === s.waterClarity ? 'on' : ''}" data-water="${esc(w)}" role="radio" aria-checked="${w === s.waterClarity}">${esc(w)}</button>`).join('')}
+      </div>
+      ${waterTimeline(s).length > 1 ? `<p class="muted small">Sinds ${fmtTime(new Date(waterTimeline(s).at(-1).at))} · ${waterTimeline(s).length - 1}× gewijzigd</p>` : ''}
     </section>
 
     <section class="rig card">
@@ -279,6 +287,7 @@ function renderVissen() {
 
   $$('[data-live-angler]', root).forEach((b) => b.addEventListener('click', () => { state.liveAngler = b.dataset.liveAngler; renderVissen(); window.scrollTo(0, 0); }));
   $$('[data-join-angler]', root).forEach((b) => b.addEventListener('click', () => openJoinSheet(s, b.dataset.joinAngler)));
+  $$('[data-water]', root).forEach((b) => b.addEventListener('click', () => setWater(s, b.dataset.water)));
   $('#add-catch', root).addEventListener('click', () => openCatchSheet(s));
   $('#add-bite', root).addEventListener('click', () => addBite(s));
   $('#stop-session', root).addEventListener('click', () => openStopSheet(s));
@@ -320,6 +329,7 @@ function openJoinSheet(host, angler) {
       lureId,
       lure,
       waterClarity: host.waterClarity,
+      waterChanges: [{ at: now.toISOString(), clarity: host.waterClarity }],
       platform: host.platform,
       conditions: computedConditions(now, host.position || host.spot || DEFAULT_POS),
       weather: host.weather && host.weather.status === 'ok' ? { ...host.weather } : { status: 'loading' },
@@ -336,6 +346,44 @@ function openJoinSheet(host, angler) {
     toast(`Sessie gestart voor ${angler === ME ? 'jou' : name}`);
     if (session.weather.status !== 'ok') updateWeather(session).then(() => state.tab === 'vissen' && render());
   });
+}
+
+// ----- Waterhelderheid wijzigen (FL-33) -----
+
+/** Legt een nieuwe waterhelderheid vast; geldt ook voor wie in dezelfde groep meevist. */
+async function setWater(s, clarity) {
+  if (s.waterClarity === clarity) return;
+  const group = actives().filter((x) => x.id === s.id || (s.groupId && x.groupId === s.groupId));
+  const at = new Date().toISOString();
+  const added = [];
+  for (const x of group) {
+    if (!x.waterChanges || !x.waterChanges.length) x.waterChanges = [{ at: x.startedAt, clarity: x.waterClarity }];
+    const entry = { id: db.uid(), at, clarity, position: null, previous: x.waterClarity };
+    x.waterChanges.push(entry);
+    x.waterClarity = clarity;
+    added.push([x, entry]);
+    await saveSession(x);
+  }
+  render();
+  toast(`Water: ${clarity.toLowerCase()}`, '', {
+    label: 'Ongedaan maken',
+    onClick: async () => {
+      for (const [x, entry] of added) {
+        x.waterChanges = x.waterChanges.filter((w) => w.id !== entry.id);
+        x.waterClarity = entry.previous;
+        await saveSession(x);
+      }
+      render();
+    },
+  });
+  getPosition({ timeout: 20000, maximumAge: 0 })
+    .then(async (p) => {
+      for (const [x, entry] of added) {
+        const saved = (x.waterChanges || []).find((w) => w.id === entry.id);
+        if (saved) { saved.position = { lat: p.lat, lng: p.lng, accuracy: p.accuracy }; await saveSession(x); }
+      }
+    })
+    .catch(() => {});
 }
 
 // ----- Pauzeren (FL-29) -----
@@ -634,6 +682,7 @@ function openStartSheet() {
         lureId,
         lure: lureSnap(lure),
         waterClarity,
+        waterChanges: [{ at: now.toISOString(), clarity: waterClarity }],
         platform,
         conditions: computedConditions(now, position),
         weather: { status: 'loading' },
@@ -1248,7 +1297,7 @@ function openSessionDetail(id) {
         <div><dt>Dagdeel (start)</dt><dd>${esc(c.dayPart)}</dd></div>
         <div><dt>Seizoen</dt><dd>${esc(c.season)}</dd></div>
         <div><dt>Maan</dt><dd>${esc(c.moonPhase)} (${c.moonIllumination ?? '–'}%)</dd></div>
-        <div><dt>Water</dt><dd>${esc(s.waterClarity)}</dd></div>
+        <div class="${waterTimeline(s).length > 1 ? 'wide' : ''}"><dt>Water</dt><dd>${waterTimeline(s).map((w, i) => (i === 0 ? esc(w.clarity) : `${esc(w.clarity.toLowerCase())} <span class="muted">(${fmtTime(new Date(w.at))})</span>`)).join(' → ')}</dd></div>
         <div><dt>Vanaf</dt><dd>${esc(s.platform)}</dd></div>
         <div><dt>Doelsoort</dt><dd>${esc((s.targetSpecies || []).join(', '))}</dd></div>
       </dl>
@@ -1342,7 +1391,7 @@ function openSessionForm(existing = null, onSaved = null) {
     ${state.anglers.length ? `<div class="field"><span class="label">Visser</span>${chips('sf-angler', anglerChoices(), s ? anglerOf(s) : ME)}</div>` : ''}
     <div class="field"><span class="label">Doelsoort(en)</span>${chips('species', SPECIES, s?.targetSpecies || last.targetSpecies || ['Snoek'], { multi: true })}</div>
     <label class="field"><span class="label">Kunstaas${s && s.changes?.length > 1 ? ' bij de start' : ''}</span><select id="sf-lure">${lureOptions(s ? first?.lureId : last.lureId, s ? anglerOf(s) : ME)}</select></label>
-    <div class="field"><span class="label">Waterhelderheid</span>${chips('water', WATER, s?.waterClarity || last.waterClarity || 'Licht troebel')}</div>
+    <div class="field"><span class="label">Waterhelderheid${s && waterTimeline(s).length > 1 ? ' bij de start' : ''}</span>${chips('water', WATER, (s && (waterTimeline(s)[0] || {}).clarity) || s?.waterClarity || last.waterClarity || 'Licht troebel')}</div>
     <div class="field"><span class="label">Je viste vanaf</span>${chips('platform', PLATFORMS, s?.platform || 'Kant')}</div>
     <label class="field"><span class="label">Notitie</span><textarea id="sf-notes" rows="2" maxlength="1000">${esc(s?.notes || '')}</textarea></label>
     ${s ? '' : '<p class="hint">Het weer van dat moment wordt automatisch opgezocht. Vangsten voeg je daarna toe.</p>'}
@@ -1402,7 +1451,10 @@ function openSessionForm(existing = null, onSaved = null) {
       if (spotChanged) { record.spot = null; record.placeName = null; }
     }
     record.targetSpecies = targetSpecies;
-    record.waterClarity = chipValue(body, 'water');
+    // Beginhelderheid bijwerken; latere wijzigingen binnen de sessie blijven staan (FL-33).
+    const laterWater = (record.waterChanges || []).slice(1).filter((w) => Date.parse(w.at) > newStart && Date.parse(w.at) < newEnd);
+    record.waterChanges = [{ at: newStart.toISOString(), clarity: chipValue(body, 'water') }, ...laterWater];
+    record.waterClarity = record.waterChanges.at(-1).clarity;
     record.platform = chipValue(body, 'platform');
     record.notes = $('#sf-notes', body).value.trim();
     // Beginsituatie bijwerken; latere wissels blijven staan.

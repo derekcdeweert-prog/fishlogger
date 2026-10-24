@@ -406,6 +406,12 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; 
 .divider-label::before, .divider-label::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 .lure-photo-holder:empty { display: none; }
 
+/* Waterhelderheid (FL-33) */
+.water-card { gap: 8px; }
+.water-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.water-opt { min-height: 48px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); font-weight: 600; cursor: pointer; padding: 4px 6px; line-height: 1.15; color: var(--ink); }
+.water-opt.on { background: var(--water); border-color: var(--water); color: #fff; }
+
 /* Vissers (FL-30) */
 .angler-tabs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding: 2px; margin: -2px; }
 .angler-tabs::-webkit-scrollbar { display: none; }
