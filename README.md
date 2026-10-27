@@ -22,4 +22,4 @@ Een statische web-app (HTML, CSS en JavaScript, geen build-stap) die je via Safa
 
 ## Publiceren met GitHub Pages
 
-Settings › Pages › Deploy from a branch › `main` / `(root)`. De app staat daarna op `https://<gebruikersnaam>.github.io/fish-logger/`.
+Settings › Pages › Deploy from a branch › `main` / `(root)`. De app staat daarna op `https://<gebruikersnaam>.github.io/fishlogger/`.
